@@ -1,0 +1,214 @@
+<?php
+require_once __DIR__ . '/../../config/config.php';
+require_once __DIR__ . '/../../includes/rbac.php';
+requirePermission('transfers.create');
+
+$pageTitle = 'Send transfer';
+$errors = [];
+$defaultFromBranch = requireActiveBranch($pdo);
+
+$branchesByTown = listBranchesByTown($pdo);
+$fromBranchId = (int)($_POST['from_branch_id'] ?? $defaultFromBranch);
+
+// Same-town destinations only — a different town is an Expedition instead
+$fromTown = $pdo->prepare("SELECT town_id FROM branches WHERE id = ?");
+$fromTown->execute([$fromBranchId]);
+$fromTownId = $fromTown->fetch()['town_id'] ?? null;
+
+$sameTownBranches = $pdo->prepare(
+    "SELECT id, name FROM branches WHERE town_id = ? AND id != ? AND is_active = 1 ORDER BY name"
+);
+$sameTownBranches->execute([$fromTownId, $fromBranchId]);
+$sameTownBranches = $sameTownBranches->fetchAll();
+
+$products = $pdo->prepare(
+    "SELECT p.id, p.name, p.sku, COALESCE(bs.quantity,0) AS quantity
+     FROM products p LEFT JOIN branch_stock bs ON bs.product_id = p.id AND bs.branch_id = ?
+     WHERE p.status = 'active' AND COALESCE(bs.quantity,0) > 0 ORDER BY p.name"
+);
+$products->execute([$fromBranchId]);
+$products = $products->fetchAll();
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($_POST['switch_only'])) {
+    csrfCheck();
+
+    $toBranchId = (int)$_POST['to_branch_id'];
+    $notes = trim($_POST['notes'] ?? '');
+    $productIds = $_POST['product_id'] ?? [];
+    $quantities = $_POST['quantity'] ?? [];
+
+    $lineItems = [];
+    foreach ($productIds as $i => $pid) {
+        $pid = (int)$pid;
+        $qty = (int)($quantities[$i] ?? 0);
+        if ($pid && $qty > 0) $lineItems[] = ['product_id' => $pid, 'quantity' => $qty];
+    }
+
+    $toTown = $pdo->prepare("SELECT town_id FROM branches WHERE id = ?");
+    $toTown->execute([$toBranchId]);
+    $toTownId = $toTown->fetch()['town_id'] ?? null;
+
+    if ($fromBranchId === $toBranchId) $errors[] = 'Source and destination branches must be different.';
+    if (!$toBranchId) $errors[] = 'Choose a destination branch.';
+    if ($toBranchId && $toTownId !== $fromTownId) $errors[] = 'A Transfer can only go to another branch in the same town. For a different town, use Expedition instead.';
+    if (!$lineItems) $errors[] = 'Add at least one product with a quantity.';
+
+    $stockLookup = [];
+    if (!$errors) {
+        $ids = array_column($lineItems, 'product_id');
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $pdo->prepare(
+            "SELECT p.id, p.name, COALESCE(bs.quantity,0) AS quantity FROM products p
+             LEFT JOIN branch_stock bs ON bs.product_id = p.id AND bs.branch_id = ?
+             WHERE p.id IN ($in)"
+        );
+        $stmt->execute(array_merge([$fromBranchId], $ids));
+        foreach ($stmt->fetchAll() as $row) $stockLookup[$row['id']] = $row;
+
+        foreach ($lineItems as $item) {
+            $p = $stockLookup[$item['product_id']] ?? null;
+            if (!$p) {
+                $errors[] = 'One of the selected products no longer exists.';
+            } elseif ($item['quantity'] > $p['quantity']) {
+                $errors[] = "Only {$p['quantity']} units of {$p['name']} available at the source branch.";
+            }
+        }
+    }
+
+    if (!$errors) {
+        $pdo->beginTransaction();
+        try {
+            $transferNumber = 'TRF-' . date('Ymd') . '-' . strtoupper(substr(uniqid(), -5));
+            $destName = getBranchName($toBranchId, $pdo);
+            $sourceName = getBranchName($fromBranchId, $pdo);
+
+            // Sending is final: the transfer is created AND stock leaves the source branch
+            // in the same step, status = pending (visible, locked, on both branches' screens)
+            // until the destination confirms receipt.
+            $pdo->prepare(
+                "INSERT INTO stock_transfers (transfer_number, type, from_branch_id, to_branch_id, user_id, notes, status, dispatched_at)
+                 VALUES (?,'transfer',?,?,?,?,'pending', NOW())"
+            )->execute([$transferNumber, $fromBranchId, $toBranchId, $_SESSION['user_id'], $notes ?: null]);
+            $transferId = $pdo->lastInsertId();
+
+            $itemStmt = $pdo->prepare("INSERT INTO stock_transfer_items (transfer_id, product_id, quantity) VALUES (?,?,?)");
+            foreach ($lineItems as $item) {
+                $itemStmt->execute([$transferId, $item['product_id'], $item['quantity']]);
+
+                $pdo->prepare(
+                    "INSERT INTO branch_stock (branch_id, product_id, quantity) VALUES (?, ?, 0)
+                     ON DUPLICATE KEY UPDATE quantity = quantity - ?"
+                )->execute([$fromBranchId, $item['product_id'], $item['quantity']]);
+                $pdo->prepare(
+                    "INSERT INTO stock_movements (branch_id, product_id, type, category, quantity, reason, reference, user_id) VALUES (?,?,'out','transfer',?,?,?,?)"
+                )->execute([$fromBranchId, $item['product_id'], $item['quantity'], 'Sent to ' . $destName, $transferNumber, $_SESSION['user_id']]);
+            }
+
+            $pdo->commit();
+            logActivity('transfers.create', "Sent transfer $transferNumber to $destName");
+            setFlash('success', "Transfer $transferNumber sent — stock left $sourceName now, and it's pending receipt at $destName.");
+            redirect('modules/transfers/view.php?id=' . $transferId);
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $errors[] = 'Could not send the transfer. Try again.';
+        }
+    }
+}
+
+require_once __DIR__ . '/../../includes/header.php';
+?>
+
+<section class="panel panel-form panel-wide">
+  <h2>Send transfer</h2>
+  <p class="muted small">Transfers move stock between two branches in the <strong>same town</strong>, and can't be edited or cancelled once sent. Moving stock to a different town? Use <a href="../expeditions/create.php" class="link">Expedition</a> instead.</p>
+  <?php foreach ($errors as $err): ?><div class="alert alert-error"><?= clean($err) ?></div><?php endforeach; ?>
+
+  <form method="post" id="transferForm" class="js-confirm" data-confirm-title="Send this transfer?" data-confirm-message="Stock leaves the source branch immediately and this can't be undone or edited afterward.">
+    <input type="hidden" name="csrf_token" value="<?= csrfToken() ?>">
+    <input type="hidden" name="switch_only" id="switchOnly" value="">
+
+    <div class="form-row">
+      <div class="form-field">
+        <label>From branch</label>
+        <select name="from_branch_id" onchange="document.getElementById('switchOnly').value='1'; this.form.submit();">
+          <?php foreach ($branchesByTown as $townName => $townBranches): ?>
+            <optgroup label="<?= clean($townName) ?>">
+              <?php foreach ($townBranches as $b): ?>
+                <option value="<?= $b['id'] ?>" <?= $b['id'] == $fromBranchId ? 'selected' : '' ?>><?= clean($b['name']) ?></option>
+              <?php endforeach; ?>
+            </optgroup>
+          <?php endforeach; ?>
+        </select>
+        <span class="form-hint">Changing this reloads the product list with that branch's stock.</span>
+      </div>
+      <div class="form-field">
+        <label>To branch <span class="muted small">(same town only)</span></label>
+        <select name="to_branch_id" required <?= !$sameTownBranches ? 'disabled' : '' ?>>
+          <option value="">— Select destination —</option>
+          <?php foreach ($sameTownBranches as $b): ?>
+            <option value="<?= $b['id'] ?>"><?= clean($b['name']) ?></option>
+          <?php endforeach; ?>
+        </select>
+        <?php if (!$sameTownBranches): ?>
+          <span class="form-hint">No other branch in this town yet — add one, or use Expedition to send to another town.</span>
+        <?php endif; ?>
+      </div>
+    </div>
+
+    <div class="form-field">
+      <label>Notes (optional)</label>
+      <input type="text" name="notes" placeholder="e.g. Sent via express courier, tracking #123">
+    </div>
+
+    <?php if ($products && $sameTownBranches): ?>
+    <table class="data-table" id="lineItemsTable">
+      <thead><tr><th>Product</th><th style="width:120px">Quantity</th><th></th></tr></thead>
+      <tbody>
+        <tr class="line-item-row">
+          <td>
+            <select name="product_id[]" class="product-select" required>
+              <option value="">— Select product —</option>
+              <?php foreach ($products as $p): ?>
+                <option value="<?= $p['id'] ?>" data-stock="<?= $p['quantity'] ?>"><?= clean($p['name']) ?> (<?= clean($p['sku']) ?>) — <?= (int)$p['quantity'] ?> available</option>
+              <?php endforeach; ?>
+            </select>
+          </td>
+          <td><input type="number" name="quantity[]" class="qty-input" min="1" value="1"></td>
+          <td><button type="button" class="link link-danger remove-row">Remove</button></td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn btn-secondary" id="addRowBtn"><?= icon('plus', 14) ?> Add another product</button>
+
+    <div class="form-actions">
+      <a href="index.php" class="btn btn-secondary">Cancel</a>
+      <button type="submit" class="btn btn-primary"><?= icon('transfer', 15) ?> Send transfer</button>
+    </div>
+    <?php elseif (!$products): ?>
+      <p class="empty-state">The source branch has no stock to transfer right now.</p>
+    <?php endif; ?>
+  </form>
+</section>
+
+<script>
+(function () {
+  const table = document.getElementById('lineItemsTable');
+  if (!table) return;
+  const tbody = table.querySelector('tbody');
+  const template = tbody.querySelector('.line-item-row');
+
+  document.getElementById('addRowBtn').addEventListener('click', function () {
+    const clone = template.cloneNode(true);
+    clone.querySelector('.qty-input').value = 1;
+    tbody.appendChild(clone);
+  });
+
+  tbody.addEventListener('click', function (e) {
+    if (e.target.classList.contains('remove-row') && tbody.querySelectorAll('.line-item-row').length > 1) {
+      e.target.closest('.line-item-row').remove();
+    }
+  });
+})();
+</script>
+
+<?php require_once __DIR__ . '/../../includes/footer.php'; ?>

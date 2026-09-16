@@ -1,0 +1,14 @@
+# Local environment overrides
+.env
+.DS_Store
+Thumbs.db
+
+# Uploaded product images (user content, not source)
+uploads/products/*
+!uploads/products/.gitkeep
+!uploads/products/.htaccess
+
+# Editor/OS cruft
+.vscode/
+.idea/
+*.swp
