@@ -108,7 +108,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </form>
 
     <p class="muted small" style="margin-top:14px;"><a href="<?= BASE_URL ?>auth/forgot-password.php" class="link">Forgot your password?</a></p>
-    <p class="muted small" style="margin-top:6px;">Default admin — username: <code>admin</code> · password: <code>Admin@123</code> (change this after first login)</p>
+    <p class="muted small" style="margin-top:6px;">Default admin — username: <code>admin</code> · password: <code>ComputerNationsBIset</code> (change this after first login)</p>
   </div>
 </div>
 

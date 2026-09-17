@@ -413,10 +413,10 @@ WHERE slug IN ('dashboard.view','inventory.view','inventory.create','inventory.e
                'purchasing.view','purchasing.create','purchasing.receive');
 
 -- Default admin user (branch_id NULL = access to all branches)
--- username: admin | password: Admin@123 — CHANGE THIS AFTER FIRST LOGIN
+-- username: admin | password: ComputerNationsBIset — CHANGE THIS AFTER FIRST LOGIN
 INSERT INTO users (full_name, username, email, password, role_id, branch_id) VALUES
-('System Administrator', 'admin', 'admin@computernations.local',
- '$2y$10$LD1rDQ.DnCO7XGE7tbufeuqIJGHtRs2/aCfFCnoN1nchWlKyfMToW', 1, NULL);
+('System Administrator', 'admin', 'shemeinchinda@gmail.com',
+ '$2b$10$b3YLDHDxAdaGlDYzF4gAGOy9w2qZBHV24KJOSL8gRoJo4zQOk3oAK', 1, NULL);
 
 -- Now that the admin account exists, attribute the branches created above to them
 UPDATE branches SET created_by = 1 WHERE created_by IS NULL;

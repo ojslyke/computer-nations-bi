@@ -130,7 +130,7 @@ computer-nations-bi/
 
 8. **Log in** with the seeded admin account:
    - Username: `admin`
-   - Password: `Admin@123`
+   - Password: `ComputerNationsBIset`
 
    **Change this password immediately** — click your avatar (top right) → Account settings → set a new password.
 
