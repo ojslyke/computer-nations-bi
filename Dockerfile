@@ -7,7 +7,9 @@ RUN docker-php-ext-install pdo pdo_mysql mysqli \
     && apt-get install -y --no-install-recommends default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
-RUN a2enmod rewrite
+RUN a2enmod rewrite \
+    && a2dismod mpm_event mpm_worker 2>/dev/null || true \
+    && a2enmod mpm_prefork
 
 COPY . /var/www/html/
 

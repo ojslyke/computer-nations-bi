@@ -10,14 +10,18 @@ sed -ri "s/:80>/:${PORT}>/" /etc/apache2/sites-available/000-default.conf
 # --- Wait for the MySQL service to accept connections -------------------
 # Railway's MySQL template uses a self-signed cert, so --ssl-mode=REQUIRED
 # (encrypt, don't verify the chain) is needed — the client's default
-# verified-SSL mode rejects a self-signed cert outright.
+# verified-SSL mode rejects a self-signed cert outright. Using the same
+# `mysql` command for the readiness probe as for the real query below,
+# rather than `mysqladmin`, so there's only one code path's flags to get right.
 MYSQL_SSL_OPT="--ssl-mode=REQUIRED"
 
 if [ -n "$MYSQLHOST" ]; then
   echo "Waiting for MySQL at ${MYSQLHOST}:${MYSQLPORT:-3306}..."
   MYSQL_UP=0
+  LAST_ERR=""
   for i in $(seq 1 30); do
-    if mysqladmin ping -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" -p"$MYSQLPASSWORD" $MYSQL_SSL_OPT --silent 2>/dev/null; then
+    LAST_ERR=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" -p"$MYSQLPASSWORD" $MYSQL_SSL_OPT -e "SELECT 1;" 2>&1 >/dev/null)
+    if [ -z "$LAST_ERR" ]; then
       echo "MySQL is up."
       MYSQL_UP=1
       break
@@ -33,18 +37,20 @@ if [ -n "$MYSQLHOST" ]; then
 
     if [ "$TABLE_COUNT" = "0" ]; then
       echo "No schema found — importing database/schema.sql..."
-      if mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" -p"$MYSQLPASSWORD" $MYSQL_SSL_OPT "$MYSQLDATABASE" < /var/www/html/database/schema.sql 2>&1; then
+      IMPORT_ERR=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" -p"$MYSQLPASSWORD" $MYSQL_SSL_OPT "$MYSQLDATABASE" < /var/www/html/database/schema.sql 2>&1 >/dev/null)
+      if [ -z "$IMPORT_ERR" ]; then
         echo "Schema imported successfully."
       else
-        echo "Schema import failed — the app will show a DB error until this is fixed; it will retry on next restart."
+        echo "Schema import failed: ${IMPORT_ERR}"
+        echo "The app will show a DB error until this is fixed; it will retry on next restart."
       fi
     else
       echo "Schema already present — skipping import."
     fi
   else
-    echo "Could not reach MySQL after 60s — starting Apache anyway; it will show a DB connection error until MySQL is reachable."
+    echo "Could not reach MySQL after 60s. Last error: ${LAST_ERR}"
+    echo "Starting Apache anyway; it will show a DB connection error until MySQL is reachable."
   fi
 fi
 
 exec "$@"
-
