@@ -8,12 +8,12 @@ sed -ri "s/Listen 80/Listen ${PORT}/" /etc/apache2/ports.conf
 sed -ri "s/:80>/:${PORT}>/" /etc/apache2/sites-available/000-default.conf
 
 # --- Wait for the MySQL service to accept connections -------------------
-# Railway's MySQL template uses a self-signed cert, so --ssl-mode=REQUIRED
-# (encrypt, don't verify the chain) is needed — the client's default
-# verified-SSL mode rejects a self-signed cert outright. Using the same
-# `mysql` command for the readiness probe as for the real query below,
-# rather than `mysqladmin`, so there's only one code path's flags to get right.
-MYSQL_SSL_OPT="--ssl-mode=REQUIRED"
+# Railway's MySQL template uses a self-signed cert. The client installed
+# here is MariaDB's (Debian's default-mysql-client), whose flag for
+# "encrypt, don't verify the certificate chain" is --ssl-verify-server-cert=0
+# — NOT --ssl-mode, which this client doesn't recognize at all.
+MYSQL_SSL_OPT="--ssl-verify-server-cert=0"
+echo "Client: $(mysql --version)"
 
 if [ -n "$MYSQLHOST" ]; then
   echo "Waiting for MySQL at ${MYSQLHOST}:${MYSQLPORT:-3306}..."
