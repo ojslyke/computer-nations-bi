@@ -7,6 +7,12 @@ PORT="${PORT:-8080}"
 sed -ri "s/Listen 80/Listen ${PORT}/" /etc/apache2/ports.conf
 sed -ri "s/:80>/:${PORT}>/" /etc/apache2/sites-available/000-default.conf
 
+echo "--- mods-enabled MPM files ---"
+ls -la /etc/apache2/mods-enabled/ | grep -i mpm
+echo "--- apache2ctl -M (loaded modules) ---"
+apache2ctl -M 2>&1 | grep -i mpm
+echo "------------------------------"
+
 # --- Wait for the MySQL service to accept connections -------------------
 # Railway's MySQL template uses a self-signed cert. The client installed
 # here is MariaDB's (Debian's default-mysql-client), whose flag for
