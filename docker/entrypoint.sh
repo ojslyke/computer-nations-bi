@@ -7,6 +7,14 @@ PORT="${PORT:-8080}"
 sed -ri "s/Listen 80/Listen ${PORT}/" /etc/apache2/ports.conf
 sed -ri "s/:80>/:${PORT}>/" /etc/apache2/sites-available/000-default.conf
 
+# Force mpm_prefork as the only enabled MPM every boot, regardless of
+# whatever the image's mods-enabled state happens to be — a build-time fix
+# for this kept getting silently undone, so do it fresh here instead.
+rm -f /etc/apache2/mods-enabled/mpm_event.conf /etc/apache2/mods-enabled/mpm_event.load \
+      /etc/apache2/mods-enabled/mpm_worker.conf /etc/apache2/mods-enabled/mpm_worker.load
+ln -sf /etc/apache2/mods-available/mpm_prefork.conf /etc/apache2/mods-enabled/mpm_prefork.conf
+ln -sf /etc/apache2/mods-available/mpm_prefork.load /etc/apache2/mods-enabled/mpm_prefork.load
+
 echo "--- mods-enabled MPM files ---"
 ls -la /etc/apache2/mods-enabled/ | grep -i mpm
 echo "--- apache2ctl -M (loaded modules) ---"
