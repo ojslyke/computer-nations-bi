@@ -1,0 +1,7 @@
+.git
+.gitignore
+README.md
+*.md
+uploads/products/*
+!uploads/products/.gitkeep
+!uploads/products/.htaccess
