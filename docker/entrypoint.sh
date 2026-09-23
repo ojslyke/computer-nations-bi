@@ -57,7 +57,24 @@ if [ -n "$MYSQLHOST" ]; then
         echo "The app will show a DB error until this is fixed; it will retry on next restart."
       fi
     else
-      echo "Schema already present — skipping import."
+      echo "Schema already present — skipping full import."
+    fi
+
+    # Always apply the latest migration too, even on an existing database —
+    # it's written to be safe to re-run (IF NOT EXISTS / information_schema
+    # guards throughout), so this is how an existing production database
+    # picks up newer tables/columns/indexes without a separate manual
+    # migration step on every deploy. Only the LATEST migration is run this
+    # way, not the full historical chain — older migrations include one-time
+    # data transforms that were never audited for being safe to repeat.
+    LATEST_MIGRATION="/var/www/html/database/migrate_v7_to_v8.sql"
+    if [ -f "$LATEST_MIGRATION" ]; then
+      MIGRATION_ERR=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" $MYSQL_SSL_OPT "$MYSQLDATABASE" < "$LATEST_MIGRATION" 2>&1 >/dev/null)
+      if [ -z "$MIGRATION_ERR" ]; then
+        echo "Applied latest migration ($(basename "$LATEST_MIGRATION"))."
+      else
+        echo "Latest migration had an issue: ${MIGRATION_ERR}"
+      fi
     fi
   else
     echo "Could not reach MySQL after 60s. Last error: ${LAST_ERR}"
