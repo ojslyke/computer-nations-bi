@@ -4,11 +4,13 @@ ENV APP_ENV=production
 
 # PDO/mysqli for the app itself, plus the mysql CLI so the entrypoint can
 # import database/schema.sql on first boot (no separate migration step to run).
-# GD is for compressing/resizing product photos on upload.
+# GD is for compressing/resizing product photos on upload. Zip is for
+# reading .xlsx files (a zip of XML) for the stock import feature — no
+# PHP library/Composer needed, since PHP can read the zip natively.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libjpeg62-turbo-dev libpng-dev libwebp-dev default-mysql-client \
+    && apt-get install -y --no-install-recommends libjpeg62-turbo-dev libpng-dev libwebp-dev libzip-dev default-mysql-client \
     && docker-php-ext-configure gd --with-jpeg --with-webp \
-    && docker-php-ext-install pdo pdo_mysql mysqli gd \
+    && docker-php-ext-install pdo pdo_mysql mysqli gd zip \
     && docker-php-ext-enable opcache \
     && pecl install apcu \
     && docker-php-ext-enable apcu \

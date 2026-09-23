@@ -179,6 +179,112 @@ function cacheRemember($key, $ttlSeconds, callable $callback) {
 }
 
 /**
+ * Reads a .xlsx or .csv file into a plain array of rows (each row itself
+ * an array of cell strings, 0-indexed by column, gaps preserved as '').
+ * No external library — an .xlsx is just a zip of XML, which PHP's
+ * bundled ZipArchive/SimpleXML already read natively.
+ * Returns false if the file couldn't be parsed at all.
+ */
+function parseSpreadsheetFile($filePath, $originalFilename) {
+    $ext = strtolower(pathinfo($originalFilename, PATHINFO_EXTENSION));
+    if ($ext === 'csv') {
+        return parseCsvToRows($filePath);
+    }
+    if ($ext === 'xlsx') {
+        return parseXlsxToRows($filePath);
+    }
+    return false;
+}
+
+function parseCsvToRows($filePath) {
+    $rows = [];
+    $handle = fopen($filePath, 'r');
+    if (!$handle) return false;
+    while (($row = fgetcsv($handle)) !== false) {
+        $rows[] = $row;
+    }
+    fclose($handle);
+    return $rows;
+}
+
+function parseXlsxToRows($filePath) {
+    if (!class_exists('ZipArchive')) return false;
+    $zip = new ZipArchive();
+    if ($zip->open($filePath) !== true) return false;
+
+    $sharedStrings = [];
+    $sharedXml = $zip->getFromName('xl/sharedStrings.xml');
+    if ($sharedXml !== false) {
+        $xml = @simplexml_load_string($sharedXml);
+        if ($xml !== false) {
+            foreach ($xml->si as $si) {
+                if (isset($si->t)) {
+                    $sharedStrings[] = (string)$si->t;
+                } else {
+                    $text = '';
+                    foreach ($si->r as $r) { $text .= (string)$r->t; }
+                    $sharedStrings[] = $text;
+                }
+            }
+        }
+    }
+
+    // Find the first worksheet — try the conventional path, then fall back
+    // to scanning the archive for any worksheet if that exact name isn't used.
+    $sheetXml = $zip->getFromName('xl/worksheets/sheet1.xml');
+    if ($sheetXml === false) {
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = $zip->getNameIndex($i);
+            if (preg_match('#^xl/worksheets/sheet\d+\.xml$#', $name)) {
+                $sheetXml = $zip->getFromName($name);
+                break;
+            }
+        }
+    }
+    $zip->close();
+    if ($sheetXml === false) return false;
+
+    $xml = @simplexml_load_string($sheetXml);
+    if ($xml === false || !isset($xml->sheetData)) return false;
+
+    $rows = [];
+    foreach ($xml->sheetData->row as $row) {
+        $rowData = [];
+        foreach ($row->c as $cell) {
+            $ref = (string)$cell['r'];
+            preg_match('/([A-Z]+)(\d+)/', $ref, $m);
+            $colLetters = $m[1] ?? '';
+            $colIndex = 0;
+            for ($i = 0; $i < strlen($colLetters); $i++) {
+                $colIndex = $colIndex * 26 + (ord($colLetters[$i]) - ord('A') + 1);
+            }
+            $colIndex--;
+            if ($colIndex < 0) continue;
+
+            $type = (string)$cell['t'];
+            $value = isset($cell->v) ? (string)$cell->v : '';
+            if ($type === 's') {
+                $value = $sharedStrings[(int)$value] ?? '';
+            } elseif ($type === 'inlineStr' && isset($cell->is->t)) {
+                $value = (string)$cell->is->t;
+            }
+            $rowData[$colIndex] = $value;
+        }
+        if ($rowData) {
+            $maxCol = max(array_keys($rowData));
+            $fullRow = [];
+            for ($c = 0; $c <= $maxCol; $c++) {
+                $fullRow[] = $rowData[$c] ?? '';
+            }
+            $rows[] = $fullRow;
+        } else {
+            $rows[] = [];
+        }
+    }
+    return $rows;
+}
+
+/**
  * Resize (if needed) and re-compress an uploaded product photo before
  * saving it — keeps product images from bloating page weight. Caller has
  * already verified $tmpPath is a genuine image via getimagesize(); $type

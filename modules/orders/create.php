@@ -27,13 +27,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $customerId  = $_POST['customer_id'] ?: null;
     $productIds  = $_POST['product_id'] ?? [];
     $quantities  = $_POST['quantity'] ?? [];
+    $unitPrices  = $_POST['unit_price'] ?? [];
 
     $lineItems = [];
     foreach ($productIds as $i => $pid) {
         $pid = (int)$pid;
         $qty = (int)($quantities[$i] ?? 0);
+        // A custom price paid can be entered per line (discounts, negotiated
+        // deals); falls back to the catalog price if left blank or invalid.
+        $customPrice = isset($unitPrices[$i]) && is_numeric($unitPrices[$i]) && (float)$unitPrices[$i] > 0
+            ? round((float)$unitPrices[$i], 2) : null;
         if ($pid && $qty > 0) {
-            $lineItems[] = ['product_id' => $pid, 'quantity' => $qty];
+            $lineItems[] = ['product_id' => $pid, 'quantity' => $qty, 'custom_price' => $customPrice];
         }
     }
 
@@ -71,7 +76,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $orderNumber = generateOrderNumber();
             $total = 0;
             foreach ($lineItems as $item) {
-                $total += $productLookup[$item['product_id']]['selling_price'] * $item['quantity'];
+                $price = $item['custom_price'] ?? $productLookup[$item['product_id']]['selling_price'];
+                $total += $price * $item['quantity'];
             }
 
             $pdo->prepare(
@@ -81,11 +87,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             foreach ($lineItems as $item) {
                 $p = $productLookup[$item['product_id']];
-                $subtotal = $p['selling_price'] * $item['quantity'];
+                $price = $item['custom_price'] ?? $p['selling_price'];
+                $subtotal = $price * $item['quantity'];
 
                 $pdo->prepare(
                     "INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal) VALUES (?,?,?,?,?)"
-                )->execute([$orderId, $item['product_id'], $item['quantity'], $p['selling_price'], $subtotal]);
+                )->execute([$orderId, $item['product_id'], $item['quantity'], $price, $subtotal]);
 
                 // Fulfilling the order removes stock at this branch — logged as a movement, same as any other stock change
                 $pdo->prepare(
@@ -133,7 +140,7 @@ require_once __DIR__ . '/../../includes/header.php';
 
     <?php if ($products): ?>
     <table class="data-table" id="lineItemsTable">
-      <thead><tr><th>Product</th><th style="width:120px">Quantity</th><th style="width:140px">Line total</th><th></th></tr></thead>
+      <thead><tr><th>Product</th><th style="width:110px">Quantity</th><th style="width:130px">Price paid</th><th style="width:140px">Line total</th><th></th></tr></thead>
       <tbody>
         <tr class="line-item-row">
           <td>
@@ -147,11 +154,13 @@ require_once __DIR__ . '/../../includes/header.php';
             </select>
           </td>
           <td><input type="number" name="quantity[]" class="qty-input" min="1" value="1"></td>
+          <td><input type="number" name="unit_price[]" class="price-input mono" min="0" step="0.01" placeholder="catalog price"></td>
           <td class="mono line-total">0 XAF</td>
           <td><button type="button" class="link link-danger remove-row">Remove</button></td>
         </tr>
       </tbody>
     </table>
+    <p class="muted small" style="margin-top:6px;">Price paid defaults to the catalog price — edit it per line for a negotiated price or discount.</p>
 
     <button type="button" class="btn btn-secondary" id="addRowBtn">+ Add another product</button>
 
@@ -178,7 +187,9 @@ require_once __DIR__ . '/../../includes/header.php';
   function recalcRow(row) {
     const select = row.querySelector('.product-select');
     const qty = parseInt(row.querySelector('.qty-input').value) || 0;
-    const price = parseFloat(select.selectedOptions[0]?.dataset.price || 0);
+    const priceInput = row.querySelector('.price-input');
+    const catalogPrice = parseFloat(select.selectedOptions[0]?.dataset.price || 0);
+    const price = priceInput.value !== '' ? parseFloat(priceInput.value) || 0 : catalogPrice;
     const lineTotal = price * qty;
     row.querySelector('.line-total').textContent = lineTotal.toLocaleString() + ' XAF';
     return lineTotal;
@@ -191,11 +202,24 @@ require_once __DIR__ . '/../../includes/header.php';
   }
 
   tbody.addEventListener('input', recalcOrder);
-  tbody.addEventListener('change', recalcOrder);
+  tbody.addEventListener('change', function (e) {
+    // Selecting a different product resets the price field to that
+    // product's catalog price, ready to be overridden again if needed.
+    if (e.target.classList.contains('product-select')) {
+      const priceInput = e.target.closest('.line-item-row').querySelector('.price-input');
+      priceInput.value = '';
+      priceInput.placeholder = e.target.selectedOptions[0]?.dataset.price
+        ? parseFloat(e.target.selectedOptions[0].dataset.price).toLocaleString() + ' XAF (catalog)'
+        : 'catalog price';
+    }
+    recalcOrder();
+  });
 
   document.getElementById('addRowBtn').addEventListener('click', function () {
     const clone = template.cloneNode(true);
     clone.querySelector('.qty-input').value = 1;
+    clone.querySelector('.price-input').value = '';
+    clone.querySelector('.price-input').placeholder = 'catalog price';
     tbody.appendChild(clone);
     recalcOrder();
   });

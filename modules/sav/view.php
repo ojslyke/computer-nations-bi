@@ -1,17 +1,19 @@
 <?php
 require_once __DIR__ . '/../../config/config.php';
 require_once __DIR__ . '/../../includes/rbac.php';
-requirePermission('sav.view');
+requireLogin();
 
 $pageTitle = 'SAV item';
 $id = (int)($_GET['id'] ?? 0);
 
 $stmt = $pdo->prepare(
-    "SELECT si.*, p.name AS product_name, p.sku, b.name AS branch_name, u.full_name AS reporter_name
+    "SELECT si.*, p.name AS product_name, p.sku, b.name AS branch_name, u.full_name AS reporter_name,
+            tech.full_name AS technician_name
      FROM sav_items si
      JOIN products p ON p.id = si.product_id
      JOIN branches b ON b.id = si.branch_id
      JOIN users u ON u.id = si.reported_by
+     LEFT JOIN users tech ON tech.id = si.assigned_technician_id
      WHERE si.id = ?"
 );
 $stmt->execute([$id]);
@@ -22,30 +24,51 @@ if (!$sav) {
     redirect('modules/sav/index.php');
 }
 
-$errors = [];
+// A technician can only ever see/act on items assigned to them; staff with
+// sav.view/sav.manage can see and act on any item, same as every other module.
+$isMyAssignedItem = hasPermission('sav.technician') && (int)$sav['assigned_technician_id'] === (int)$_SESSION['user_id'];
 $canManage = hasPermission('sav.manage');
+$canAct = $canManage || $isMyAssignedItem;
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canManage) {
+if (!$canManage && !hasPermission('sav.view') && !$isMyAssignedItem) {
+    require __DIR__ . '/../../403.php';
+    exit;
+}
+
+$errors = [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canAct) {
     csrfCheck();
     $action = $_POST['action'] ?? '';
 
-    if ($action === 'send_to_technician' && $sav['status'] === 'reported') {
-        $technicianId = (int)($_POST['technician_id'] ?? 0);
+    if ($action === 'send_to_technician' && $canManage && $sav['status'] === 'reported') {
+        $technicianUserId = (int)($_POST['technician_user_id'] ?? 0);
         $notes = trim($_POST['notes'] ?? '');
-        if (!$technicianId) {
+        if (!$technicianUserId) {
             $errors[] = 'Choose a technician.';
         } else {
-            $pdo->prepare("UPDATE sav_items SET status = 'with_technician' WHERE id = ?")->execute([$id]);
+            $pdo->prepare("UPDATE sav_items SET status = 'with_technician', assigned_technician_id = ?, technician_received_at = NULL WHERE id = ?")
+                ->execute([$technicianUserId, $id]);
             $pdo->prepare(
-                "INSERT INTO sav_activities (sav_item_id, action, technician_id, notes, user_id) VALUES (?, 'sent_to_technician', ?, ?, ?)"
-            )->execute([$id, $technicianId, $notes ?: null, $_SESSION['user_id']]);
+                "INSERT INTO sav_activities (sav_item_id, action, technician_user_id, notes, user_id) VALUES (?, 'sent_to_technician', ?, ?, ?)"
+            )->execute([$id, $technicianUserId, $notes ?: null, $_SESSION['user_id']]);
             logActivity('sav.manage', "Sent {$sav['sav_number']} to technician");
             setFlash('success', 'Sent to technician.');
             redirect('modules/sav/view.php?id=' . $id);
         }
     }
 
-    if ($action === 'receive_from_technician' && $sav['status'] === 'with_technician') {
+    if ($action === 'confirm_receipt' && $canAct && $sav['status'] === 'with_technician' && !$sav['technician_received_at']) {
+        $pdo->prepare("UPDATE sav_items SET technician_received_at = NOW() WHERE id = ?")->execute([$id]);
+        $pdo->prepare(
+            "INSERT INTO sav_activities (sav_item_id, action, technician_user_id, user_id) VALUES (?, 'confirmed_receipt', ?, ?)"
+        )->execute([$id, $sav['assigned_technician_id'], $_SESSION['user_id']]);
+        logActivity('sav.technician', "Confirmed receipt of {$sav['sav_number']}");
+        setFlash('success', 'Marked received.');
+        redirect('modules/sav/view.php?id=' . $id);
+    }
+
+    if ($action === 'receive_from_technician' && $canAct && $sav['status'] === 'with_technician' && $sav['technician_received_at']) {
         $outcome = $_POST['outcome'] ?? '';
         $notes = trim($_POST['notes'] ?? '');
 
@@ -55,11 +78,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canManage) {
             $pdo->beginTransaction();
             try {
                 $pdo->prepare(
-                    "INSERT INTO sav_activities (sav_item_id, action, notes, user_id) VALUES (?, 'received_from_technician', ?, ?)"
-                )->execute([$id, $notes ?: ucfirst(str_replace('_', ' ', $outcome)), $_SESSION['user_id']]);
+                    "INSERT INTO sav_activities (sav_item_id, action, technician_user_id, notes, user_id) VALUES (?, 'received_from_technician', ?, ?, ?)"
+                )->execute([$id, $sav['assigned_technician_id'], $notes ?: ucfirst(str_replace('_', ' ', $outcome)), $_SESSION['user_id']]);
 
                 if ($outcome === 'repaired') {
-                    $pdo->prepare("UPDATE sav_items SET status = 'repaired' WHERE id = ?")->execute([$id]);
+                    $pdo->prepare("UPDATE sav_items SET status = 'repaired', assigned_technician_id = NULL WHERE id = ?")->execute([$id]);
                     $pdo->prepare(
                         "INSERT INTO branch_stock (branch_id, product_id, quantity) VALUES (?, ?, ?)
                          ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)"
@@ -72,10 +95,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canManage) {
                     )->execute([$id, "{$sav['quantity']} unit(s) added back to sellable stock", $_SESSION['user_id']]);
                     $flashMsg = 'Marked repaired — stock returned.';
                 } elseif ($outcome === 'still_broken') {
-                    $pdo->prepare("UPDATE sav_items SET status = 'reported' WHERE id = ?")->execute([$id]);
+                    $pdo->prepare("UPDATE sav_items SET status = 'reported', assigned_technician_id = NULL, technician_received_at = NULL WHERE id = ?")->execute([$id]);
                     $flashMsg = 'Back at the branch, still unresolved — send to a technician again when ready.';
                 } else {
-                    $pdo->prepare("UPDATE sav_items SET status = 'unrepairable' WHERE id = ?")->execute([$id]);
+                    $pdo->prepare("UPDATE sav_items SET status = 'unrepairable', assigned_technician_id = NULL WHERE id = ?")->execute([$id]);
                     $pdo->prepare(
                         "INSERT INTO sav_activities (sav_item_id, action, notes, user_id) VALUES (?, 'written_off', ?, ?)"
                     )->execute([$id, "{$sav['quantity']} unit(s) written off — not repairable", $_SESSION['user_id']]);
@@ -83,7 +106,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canManage) {
                 }
 
                 $pdo->commit();
-                logActivity('sav.manage', "Received {$sav['sav_number']} from technician: $outcome");
+                logActivity($canManage ? 'sav.manage' : 'sav.technician', "Recorded outcome for {$sav['sav_number']}: $outcome");
                 setFlash('success', $flashMsg);
                 redirect('modules/sav/view.php?id=' . $id);
             } catch (Exception $e) {
@@ -97,22 +120,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canManage) {
 // Re-fetch in case of the errors path re-render (status won't have changed, but keep data fresh)
 $stmt->execute([$id]);
 $sav = $stmt->fetch();
+$isMyAssignedItem = hasPermission('sav.technician') && (int)$sav['assigned_technician_id'] === (int)$_SESSION['user_id'];
+$canAct = $canManage || $isMyAssignedItem;
 
 $activities = $pdo->prepare(
-    "SELECT sa.*, t.name AS technician_name, u.full_name AS user_name
+    "SELECT sa.*, COALESCE(tu.full_name, t.name) AS technician_name, u.full_name AS user_name
      FROM sav_activities sa
      LEFT JOIN technicians t ON t.id = sa.technician_id
+     LEFT JOIN users tu ON tu.id = sa.technician_user_id
      JOIN users u ON u.id = sa.user_id
      WHERE sa.sav_item_id = ? ORDER BY sa.created_at ASC"
 );
 $activities->execute([$id]);
 $activities = $activities->fetchAll();
 
-$technicians = $pdo->query("SELECT id, name FROM technicians ORDER BY name")->fetchAll();
+$technicianUsers = [];
+if ($canManage) {
+    $technicianUsers = $pdo->query(
+        "SELECT u.id, u.full_name, b.name AS branch_name FROM users u
+         JOIN roles r ON r.id = u.role_id LEFT JOIN branches b ON b.id = u.branch_id
+         WHERE r.name = 'Technician' AND u.status = 'active' ORDER BY u.full_name"
+    )->fetchAll();
+}
 
 $actionLabels = [
     'reported'                 => 'Reported',
     'sent_to_technician'       => 'Sent to technician',
+    'confirmed_receipt'        => 'Technician confirmed receipt',
     'received_from_technician' => 'Received from technician',
     'returned_to_stock'        => 'Returned to stock',
     'written_off'              => 'Written off',
@@ -120,6 +154,7 @@ $actionLabels = [
 $actionIcons = [
     'reported'                 => 'warning',
     'sent_to_technician'       => 'purchasing',
+    'confirmed_receipt'        => 'box-check',
     'received_from_technician' => 'box-check',
     'returned_to_stock'        => 'inventory',
     'written_off'              => 'trash',
@@ -142,6 +177,9 @@ require_once __DIR__ . '/../../includes/header.php';
   <div class="detail-grid">
     <div><span class="muted">Issue</span><br><?= clean($sav['issue_description']) ?></div>
     <div><span class="muted">Reported by</span><br><?= clean($sav['reporter_name']) ?> · <?= date('d M Y', strtotime($sav['created_at'])) ?></div>
+    <?php if ($sav['technician_name']): ?>
+      <div><span class="muted">Assigned to</span><br><?= clean($sav['technician_name']) ?><?= $sav['technician_received_at'] ? ' · confirmed receipt ' . date('d M Y', strtotime($sav['technician_received_at'])) : ' · not yet confirmed' ?></div>
+    <?php endif; ?>
   </div>
 
   <?php foreach ($errors as $err): ?><div class="alert alert-error"><?= clean($err) ?></div><?php endforeach; ?>
@@ -153,10 +191,10 @@ require_once __DIR__ . '/../../includes/header.php';
         <input type="hidden" name="action" value="send_to_technician">
         <div class="form-field" style="margin-bottom:0;">
           <label>Send to technician</label>
-          <select name="technician_id" required>
+          <select name="technician_user_id" required>
             <option value="">— Select —</option>
-            <?php foreach ($technicians as $t): ?>
-              <option value="<?= $t['id'] ?>"><?= clean($t['name']) ?></option>
+            <?php foreach ($technicianUsers as $t): ?>
+              <option value="<?= $t['id'] ?>"><?= clean($t['full_name']) ?><?= $t['branch_name'] ? ' — ' . clean($t['branch_name']) : '' ?></option>
             <?php endforeach; ?>
           </select>
         </div>
@@ -167,17 +205,27 @@ require_once __DIR__ . '/../../includes/header.php';
         <button type="submit" class="btn btn-primary"><?= icon('purchasing', 15) ?> Send</button>
       </form>
     </div>
-    <?php if (!$technicians): ?>
-      <p class="muted small" style="margin-top:10px;">No technicians yet — <a href="../technicians/index.php" class="link">add one</a> first.</p>
+    <?php if (!$technicianUsers): ?>
+      <p class="muted small" style="margin-top:10px;">No technician accounts yet — add one from <a href="../users/add.php" class="link">Users &amp; roles</a> with the Technician role.</p>
     <?php endif; ?>
   <?php endif; ?>
 
-  <?php if ($canManage && $sav['status'] === 'with_technician'): ?>
+  <?php if ($canAct && $sav['status'] === 'with_technician' && !$sav['technician_received_at']): ?>
+    <div class="form-actions" style="justify-content:flex-start; margin-top:16px;">
+      <form method="post">
+        <input type="hidden" name="csrf_token" value="<?= csrfToken() ?>">
+        <input type="hidden" name="action" value="confirm_receipt">
+        <button type="submit" class="btn btn-primary"><?= icon('box-check', 15) ?> Mark received</button>
+      </form>
+    </div>
+  <?php endif; ?>
+
+  <?php if ($canAct && $sav['status'] === 'with_technician' && $sav['technician_received_at']): ?>
     <div class="form-actions" style="justify-content:flex-start; margin-top:16px; flex-direction:column; align-items:flex-start; gap:10px;">
       <form method="post">
         <input type="hidden" name="csrf_token" value="<?= csrfToken() ?>">
         <input type="hidden" name="action" value="receive_from_technician">
-        <label class="muted small" style="display:block; margin-bottom:8px; font-weight:600;">Receive from technician — outcome</label>
+        <label class="muted small" style="display:block; margin-bottom:8px; font-weight:600;">Outcome</label>
         <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px;">
           <label class="checkbox-row"><input type="radio" name="outcome" value="repaired" required> Repaired — return to stock</label>
           <label class="checkbox-row"><input type="radio" name="outcome" value="still_broken"> Still broken — back to branch</label>

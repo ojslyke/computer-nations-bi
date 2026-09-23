@@ -60,22 +60,25 @@ if [ -n "$MYSQLHOST" ]; then
       echo "Schema already present — skipping full import."
     fi
 
-    # Always apply the latest migration too, even on an existing database —
-    # it's written to be safe to re-run (IF NOT EXISTS / information_schema
-    # guards throughout), so this is how an existing production database
-    # picks up newer tables/columns/indexes without a separate manual
-    # migration step on every deploy. Only the LATEST migration is run this
-    # way, not the full historical chain — older migrations include one-time
-    # data transforms that were never audited for being safe to repeat.
-    LATEST_MIGRATION="/var/www/html/database/migrate_v7_to_v8.sql"
-    if [ -f "$LATEST_MIGRATION" ]; then
-      MIGRATION_ERR=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" $MYSQL_SSL_OPT "$MYSQLDATABASE" < "$LATEST_MIGRATION" 2>&1 >/dev/null)
-      if [ -z "$MIGRATION_ERR" ]; then
-        echo "Applied latest migration ($(basename "$LATEST_MIGRATION"))."
-      else
-        echo "Latest migration had an issue: ${MIGRATION_ERR}"
+    # Always apply every "idempotent-safe" migration too, even on an
+    # existing database — each is written to be safe to re-run (IF NOT
+    # EXISTS / information_schema guards throughout), so this is how an
+    # existing production database picks up newer tables/columns/indexes
+    # without a separate manual migration step on every deploy. Only
+    # migrations confirmed safe to repeat are listed here — older ones
+    # include one-time data transforms that were never audited for that.
+    # Add each new migration to the END of this list as it's created.
+    for IDEMPOTENT_MIGRATION in migrate_v7_to_v8.sql migrate_v8_to_v9.sql; do
+      MIGRATION_PATH="/var/www/html/database/${IDEMPOTENT_MIGRATION}"
+      if [ -f "$MIGRATION_PATH" ]; then
+        MIGRATION_ERR=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" $MYSQL_SSL_OPT "$MYSQLDATABASE" < "$MIGRATION_PATH" 2>&1 >/dev/null)
+        if [ -z "$MIGRATION_ERR" ]; then
+          echo "Applied migration (${IDEMPOTENT_MIGRATION})."
+        else
+          echo "Migration ${IDEMPOTENT_MIGRATION} had an issue: ${MIGRATION_ERR}"
+        fi
       fi
-    fi
+    done
   else
     echo "Could not reach MySQL after 60s. Last error: ${LAST_ERR}"
     echo "Starting Apache anyway; it will show a DB connection error until MySQL is reachable."

@@ -111,7 +111,7 @@ if (hasPermission('inventory.view')) {
       </nav>
       <?php endif; ?>
 
-      <?php if (hasPermission('transfers.view') || hasPermission('expeditions.view') || hasPermission('sav.view')): ?>
+      <?php if (hasPermission('transfers.view') || hasPermission('expeditions.view') || hasPermission('sav.view') || hasPermission('sav.technician') || hasPermission('audit.view')): ?>
       <div class="nav-group-label">Warehouse</div>
       <nav class="sidebar-nav">
         <?php if (hasPermission('transfers.view')): ?>
@@ -124,7 +124,7 @@ if (hasPermission('inventory.view')) {
           <?= icon('purchasing') ?> Expedition
         </a>
         <?php endif; ?>
-        <?php if (hasPermission('sav.view')): ?>
+        <?php if (hasPermission('sav.view') || hasPermission('sav.technician')): ?>
         <a href="<?= BASE_URL ?>modules/sav/index.php" class="<?= navActive($currentDir, 'sav') ?>">
           <?= icon('warning') ?> SAV
         </a>
@@ -132,6 +132,11 @@ if (hasPermission('inventory.view')) {
         <?php if (hasPermission('sav.manage')): ?>
         <a href="<?= BASE_URL ?>modules/technicians/index.php" class="<?= navActive($currentDir, 'technicians') ?>">
           <?= icon('suppliers') ?> Technicians
+        </a>
+        <?php endif; ?>
+        <?php if (hasPermission('audit.view')): ?>
+        <a href="<?= BASE_URL ?>modules/audit/index.php" class="<?= navActive($currentDir, 'audit') ?>">
+          <?= icon('reports') ?> Stock audits
         </a>
         <?php endif; ?>
       </nav>

@@ -278,26 +278,59 @@ CREATE TABLE sav_items (
     issue_description VARCHAR(255) NOT NULL,
     status ENUM('reported','with_technician','repaired','unrepairable') NOT NULL DEFAULT 'reported',
     reported_by INT NOT NULL,
+    assigned_technician_id INT DEFAULT NULL,  -- the technician USER currently holding this item, if any
+    technician_received_at DATETIME DEFAULT NULL,  -- when the assigned technician confirmed they have it (mirrors Transfers' send/receive split)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (branch_id) REFERENCES branches(id),
     FOREIGN KEY (product_id) REFERENCES products(id),
-    FOREIGN KEY (reported_by) REFERENCES users(id)
+    FOREIGN KEY (reported_by) REFERENCES users(id),
+    FOREIGN KEY (assigned_technician_id) REFERENCES users(id)
 ) ENGINE=InnoDB;
 
 -- The full timeline for one SAV item — reported, sent out, came back,
 -- resolved. This is what lets the SAV detail page show every step.
+-- technician_id (the old contacts table) is kept only for history from
+-- before technicians were system users; technician_user_id is the live column.
 CREATE TABLE sav_activities (
     id INT AUTO_INCREMENT PRIMARY KEY,
     sav_item_id INT NOT NULL,
-    action ENUM('reported','sent_to_technician','received_from_technician','returned_to_stock','written_off') NOT NULL,
+    action ENUM('reported','sent_to_technician','confirmed_receipt','received_from_technician','returned_to_stock','written_off') NOT NULL,
     technician_id INT DEFAULT NULL,
+    technician_user_id INT DEFAULT NULL,
     notes VARCHAR(255) DEFAULT NULL,
     user_id INT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (sav_item_id) REFERENCES sav_items(id) ON DELETE CASCADE,
     FOREIGN KEY (technician_id) REFERENCES technicians(id),
+    FOREIGN KEY (technician_user_id) REFERENCES users(id),
     FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------
+-- 9.5 STOCK AUDITS — a physical count compared against system quantity,
+--     per branch, showing excess/shortage per product.
+-- ---------------------------------------------------------------------
+CREATE TABLE stock_audits (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    audit_number VARCHAR(30) NOT NULL UNIQUE,
+    branch_id INT NOT NULL,
+    conducted_by INT NOT NULL,
+    notes VARCHAR(255) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (branch_id) REFERENCES branches(id),
+    FOREIGN KEY (conducted_by) REFERENCES users(id)
+) ENGINE=InnoDB;
+
+CREATE TABLE stock_audit_items (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    audit_id INT NOT NULL,
+    product_id INT NOT NULL,
+    system_quantity INT NOT NULL,
+    counted_quantity INT NOT NULL,
+    variance INT NOT NULL,  -- counted - system; positive = excess, negative = shortage
+    FOREIGN KEY (audit_id) REFERENCES stock_audits(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id)
 ) ENGINE=InnoDB;
 
 -- ---------------------------------------------------------------------
@@ -348,7 +381,10 @@ INSERT INTO roles (name, description) VALUES
 ('Admin', 'Full system access across every branch'),
 ('Manager', 'Manages inventory, orders, reports and staff activity across branches'),
 ('Sales Staff', 'Creates orders and views products/customers at their branch'),
-('Inventory Staff', 'Manages stock levels, transfers and suppliers at their branch');
+('Inventory Staff', 'Manages stock levels, transfers and suppliers at their branch'),
+('Technician', 'Repairs SAV items assigned to them, at their branch'),
+('Accountant', 'Views financial reports, orders and stock audits for reconciliation'),
+('Secretary', 'Handles customers and order entry at their branch');
 
 -- Permissions
 INSERT INTO permissions (slug, label, module) VALUES
@@ -358,6 +394,7 @@ INSERT INTO permissions (slug, label, module) VALUES
 ('inventory.create',      'Add products',                 'inventory'),
 ('inventory.edit',        'Edit products',                'inventory'),
 ('inventory.delete',      'Delete products',               'inventory'),
+('inventory.import',      'Bulk import stock from Excel',  'inventory'),
 ('stock.view',            'View stock movements',          'stock'),
 ('stock.adjust',          'Record stock in/out',           'stock'),
 ('transfers.view',        'View transfers (same town)',    'transfers'),
@@ -369,6 +406,7 @@ INSERT INTO permissions (slug, label, module) VALUES
 ('sav.view',              'View SAV items',                 'sav'),
 ('sav.create',            'Report a new SAV item',          'sav'),
 ('sav.manage',            'Send/receive SAV items, manage technicians', 'sav'),
+('sav.technician',        'Mark SAV items assigned to me as received/repaired', 'sav'),
 ('orders.view',           'View orders',                    'orders'),
 ('orders.create',         'Create orders',                  'orders'),
 ('orders.cancel',         'Cancel orders',                  'orders'),
@@ -383,6 +421,9 @@ INSERT INTO permissions (slug, label, module) VALUES
 ('purchasing.create',     'Create purchase orders',         'purchasing'),
 ('purchasing.receive',    'Receive purchase order stock',   'purchasing'),
 ('activity.view',         'View activity log',              'activity'),
+('audit.view',            'View stock audits',              'audit'),
+('audit.create',          'Conduct a stock audit (count)',  'audit'),
+('audit.export',          'Export stock audits to CSV',     'audit'),
 ('users.manage',          'Manage users and roles',         'users');
 
 -- Role <-> Permission mapping
@@ -406,11 +447,29 @@ WHERE slug IN ('dashboard.view','inventory.view','orders.view','orders.create',
 -- to any role from Roles & permissions.)
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT 4, id FROM permissions
-WHERE slug IN ('dashboard.view','inventory.view','inventory.create','inventory.edit',
+WHERE slug IN ('dashboard.view','inventory.view','inventory.create','inventory.edit','inventory.import',
                'stock.view','stock.adjust','transfers.view','transfers.create','transfers.receive',
                'sav.view','sav.create','sav.manage',
                'suppliers.view','suppliers.manage','categories.manage',
-               'purchasing.view','purchasing.create','purchasing.receive');
+               'purchasing.view','purchasing.create','purchasing.receive',
+               'audit.view','audit.create','audit.export');
+
+-- Technician: only ever acts on SAV items assigned to them — no visibility
+-- into anything else (inventory, orders, other branches' SAV items, etc).
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT 5, id FROM permissions WHERE slug IN ('dashboard.view','sav.technician');
+
+-- Accountant: financial visibility and reconciliation, no operational control
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT 6, id FROM permissions
+WHERE slug IN ('dashboard.view','reports.view','reports.export','orders.view',
+               'purchasing.view','activity.view','audit.view','audit.export');
+
+-- Secretary: front-desk — customers and order entry, nothing operational
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT 7, id FROM permissions
+WHERE slug IN ('dashboard.view','customers.view','customers.manage',
+               'orders.view','orders.create','suppliers.view');
 
 -- Default admin user (branch_id NULL = access to all branches)
 -- username: admin | password: ComputerNationsBIset — CHANGE THIS AFTER FIRST LOGIN

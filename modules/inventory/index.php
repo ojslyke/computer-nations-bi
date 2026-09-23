@@ -65,6 +65,9 @@ require_once __DIR__ . '/../../includes/header.php';
   </form>
   <div style="display:flex; gap:8px;">
     <a href="export.php" class="btn btn-secondary"><?= icon('download', 15) ?> Export CSV</a>
+    <?php if (hasPermission('inventory.import')): ?>
+      <a href="import.php" class="btn btn-secondary"><?= icon('purchasing', 15) ?> Import stock (Excel)</a>
+    <?php endif; ?>
     <?php if (hasPermission('inventory.create')): ?>
       <a href="create.php" class="btn btn-primary"><?= icon('plus', 15) ?> Add product</a>
     <?php endif; ?>
