@@ -28,20 +28,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'SKU and product name are required.';
     }
 
-    // Optional image upload
+    // Optional image upload — validated by actually inspecting the file's
+    // bytes (getimagesize), not the client-supplied Content-Type or
+    // filename, both of which are trivially spoofable.
     $imagePath = null;
     if (!empty($_FILES['image']['name'])) {
-        $allowed = ['image/jpeg', 'image/png', 'image/webp'];
-        if (!in_array($_FILES['image']['type'], $allowed, true)) {
-            $errors[] = 'Image must be JPG, PNG or WEBP.';
-        } elseif ($_FILES['image']['size'] > 2 * 1024 * 1024) {
+        if ($_FILES['image']['error'] !== UPLOAD_ERR_OK) {
+            $errors[] = 'Image upload failed. Try again.';
+        } elseif ($_FILES['image']['size'] > 2 * 1024 * 1024 || filesize($_FILES['image']['tmp_name']) > 2 * 1024 * 1024) {
             $errors[] = 'Image must be under 2MB.';
         } else {
-            if (!is_dir(UPLOAD_DIR)) mkdir(UPLOAD_DIR, 0755, true);
-            $ext = pathinfo($_FILES['image']['name'], PATHINFO_EXTENSION);
-            $filename = 'prod_' . uniqid() . '.' . $ext;
-            move_uploaded_file($_FILES['image']['tmp_name'], UPLOAD_DIR . $filename);
-            $imagePath = $filename;
+            $imageInfo = @getimagesize($_FILES['image']['tmp_name']);
+            $allowedTypes = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png', IMAGETYPE_WEBP => 'webp'];
+            if ($imageInfo === false || !isset($allowedTypes[$imageInfo[2]])) {
+                $errors[] = 'Image must be a genuine JPG, PNG or WEBP file.';
+            } else {
+                if (!is_dir(UPLOAD_DIR)) mkdir(UPLOAD_DIR, 0755, true);
+                $ext = $allowedTypes[$imageInfo[2]];
+                $filename = 'prod_' . bin2hex(random_bytes(8)) . '.' . $ext;
+                if (!compressAndSaveProductImage($_FILES['image']['tmp_name'], $imageInfo[2], UPLOAD_DIR . $filename)) {
+                    // GD couldn't process it for some reason — still safe to store the
+                    // original as-is, since it already passed the getimagesize() check.
+                    move_uploaded_file($_FILES['image']['tmp_name'], UPLOAD_DIR . $filename);
+                }
+                $imagePath = $filename;
+            }
         }
     }
 

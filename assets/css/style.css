@@ -40,6 +40,28 @@
   --shadow-pop: 0 8px 24px rgba(16, 24, 40, 0.12), 0 2px 6px rgba(16,24,40,0.06);
 }
 
+/* Dark mode — same token names, different values, so every rule below
+   that already uses var(--surface)/var(--text)/etc. just works unchanged. */
+:root[data-theme="dark"] {
+  --surface:    #1B2138;
+  --bg:         #12172A;
+  --border:     #2B3352;
+  --border-soft:#232B48;
+
+  --accent-soft:#1B2A4D;
+  --success-soft:#0F2B20;
+  --warning-soft:#3A2A0A;
+  --danger-soft: #3A1616;
+  --violet-soft:#241C4D;
+
+  --text:       #E9EBF3;
+  --text-muted: #9098B5;
+  --text-soft:  #6B7396;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0,0,0,0.3);
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
@@ -348,6 +370,30 @@ p { margin: 0 0 8px; }
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(47,111,237,0.12);
 }
 .form-field input:disabled { background: var(--bg); color: var(--text-muted); }
+
+.password-field { position: relative; display: flex; }
+.password-field input[type="password"], .password-field input[type="text"] { flex: 1; padding-right: 38px; }
+.password-toggle-btn {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; padding: 6px; cursor: pointer; color: var(--text-muted);
+  display: flex; align-items: center; border-radius: var(--radius-sm);
+}
+.password-toggle-btn:hover { color: var(--text); background: var(--bg); }
+
+.product-thumb { width: 36px; height: 36px; border-radius: var(--radius-sm); object-fit: cover; display: block; }
+.product-thumb-empty { display: flex; align-items: center; justify-content: center; background: var(--bg); color: var(--text-muted); }
+
+.pagination { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 18px; }
+.btn.disabled { pointer-events: none; opacity: 0.45; }
+
+.chart-wrap { position: relative; }
+.chart-skeleton {
+  position: absolute; inset: 0; border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--bg) 25%, var(--border-soft) 50%, var(--bg) 75%);
+  background-size: 200% 100%; animation: chart-skeleton-pulse 1.4s ease-in-out infinite;
+}
+@keyframes chart-skeleton-pulse { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
 .form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
 
 /* ---------------------------------------------------------------------
@@ -462,6 +508,13 @@ p { margin: 0 0 8px; }
 .error-card { text-align: center; max-width: 360px; }
 .error-card h1 { font-size: 48px; font-family: var(--font-mono); color: var(--text-soft); }
 .error-card .btn { margin-top: 14px; }
+
+.legal-page { min-height: 100vh; display: flex; justify-content: center; padding: 48px 20px; background: var(--bg); }
+.legal-card { max-width: 640px; width: 100%; }
+.legal-card h1 { margin-bottom: 4px; }
+.legal-card h2 { font-size: 16px; margin-top: 28px; margin-bottom: 6px; }
+.legal-card p { color: var(--text-soft); line-height: 1.6; }
+.legal-card .btn { margin-top: 24px; }
 
 /* ---------------------------------------------------------------------
    Print styles (invoice)

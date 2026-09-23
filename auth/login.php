@@ -14,6 +14,11 @@ if ($flash && $flash['type'] === 'error') {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrfCheck();
+
+    if (!rateLimitCheck($pdo, 'login', requestIp(), 10, 900)) {
+        $error = 'Too many attempts from this connection. Wait a few minutes and try again.';
+    } else {
+    rateLimitRecord($pdo, 'login', requestIp());
     $username = trim($_POST['username'] ?? '');
     $password = $_POST['password'] ?? '';
 
@@ -54,6 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Incorrect username or password.';
         }
     }
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -61,6 +67,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem('cn-theme');
+    if (saved === 'dark' || saved === 'light') {
+      document.documentElement.setAttribute('data-theme', saved);
+    }
+  } catch (e) {}
+})();
+</script>
 <title>Log in — <?= SITE_NAME ?></title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -108,7 +124,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </form>
 
     <p class="muted small" style="margin-top:14px;"><a href="<?= BASE_URL ?>auth/forgot-password.php" class="link">Forgot your password?</a></p>
-    <p class="muted small" style="margin-top:6px;">Default admin — username: <code>admin</code> · password: <code>ComputerNationsBIset</code> (change this after first login)</p>
+    <p class="muted small" style="margin-top:6px;"><a href="<?= BASE_URL ?>privacy-policy.php" class="link">Privacy Policy</a></p>
   </div>
 </div>
 

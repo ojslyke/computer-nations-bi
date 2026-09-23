@@ -95,7 +95,7 @@ require_once __DIR__ . '/../../includes/header.php';
   <table class="data-table" data-has-server-search="true">
     <thead>
       <tr>
-        <th>Product</th><th>SKU</th><th>Category</th><th>Supplier</th>
+        <th></th><th>Product</th><th>SKU</th><th>Category</th><th>Supplier</th>
         <th>Cost</th><th>Price</th><th><?= $viewBranchId !== null ? 'Good stock' : 'Total good stock' ?></th><th>SAV</th><th>Status</th>
         <?php if (hasPermission('inventory.edit') || hasPermission('inventory.delete')): ?><th></th><?php endif; ?>
       </tr>
@@ -103,6 +103,13 @@ require_once __DIR__ . '/../../includes/header.php';
     <tbody>
       <?php foreach ($products as $p): $isLow = $viewBranchId !== null ? $p['quantity'] <= $p['reorder_level'] : ($p['low_branch_count'] ?? 0) > 0; ?>
       <tr>
+        <td>
+          <?php if (!empty($p['image'])): ?>
+            <img src="<?= UPLOAD_URL . clean($p['image']) ?>" alt="" class="product-thumb" loading="lazy" decoding="async" width="36" height="36">
+          <?php else: ?>
+            <span class="product-thumb product-thumb-empty"><?= icon('inventory', 16) ?></span>
+          <?php endif; ?>
+        </td>
         <td><?= clean($p['name']) ?></td>
         <td class="mono"><?= clean($p['sku']) ?></td>
         <td><?= clean($p['category_name'] ?? '—') ?></td>

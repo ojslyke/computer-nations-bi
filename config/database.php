@@ -18,6 +18,12 @@ try {
         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_EMULATE_PREPARES   => false,
+        // Reuse the underlying connection across requests handled by the
+        // same Apache worker instead of opening a fresh one every time —
+        // the closest equivalent to "connection pooling" in the
+        // mod_php/PDO world, where there's no long-running app process
+        // to hold a real pool.
+        PDO::ATTR_PERSISTENT         => true,
     ];
     // Railway's MySQL uses a self-signed cert — encrypt the connection but
     // don't try to verify that cert against a CA (there isn't one to check

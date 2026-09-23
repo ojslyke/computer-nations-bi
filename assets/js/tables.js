@@ -9,6 +9,14 @@
 (function () {
   const PAGE_SIZE = 12;
 
+  function debounce(fn, delay) {
+    let timer = null;
+    return function (...args) {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn.apply(this, args), delay);
+    };
+  }
+
   function initTable(table) {
     if (table.dataset.enhanced) return;
     table.dataset.enhanced = '1';
@@ -48,11 +56,11 @@
         </div>
         <span class="table-count"></span>`;
       table.parentNode.insertBefore(toolbar, table);
-      toolbar.querySelector('input').addEventListener('input', function (e) {
+      toolbar.querySelector('input').addEventListener('input', debounce(function (e) {
         state.query = e.target.value.toLowerCase();
         state.page = 1;
         render();
-      });
+      }, 150));
     }
 
     // --- Sortable headers ---

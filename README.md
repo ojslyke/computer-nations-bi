@@ -242,6 +242,14 @@ A few things worth knowing if you're extending the front end:
 
 ---
 
+## 9.5. Deployment, CDN, and scaling
+
+The app is deployed on Railway as a Docker container (PHP 8.3 + Apache) alongside a managed MySQL service — see `Dockerfile` and `docker/entrypoint.sh`. A few things worth knowing if you're scaling this up:
+
+- **CDN**: static assets (`assets/css`, `assets/js`) are served with long-lived, cache-busting-safe `Cache-Control` headers (see `docker/000-default.conf`), which is the prerequisite for any CDN to actually cache them — but Railway doesn't include a CDN layer itself. For real CDN caching of static assets (and DDoS protection, and a second layer of rate limiting), put a free Cloudflare account in front of the Railway domain: point a custom domain's DNS through Cloudflare, proxy it (orange cloud), and its edge will cache the static assets automatically off these headers, no app changes needed.
+- **Load balancing / horizontal scaling**: Railway's own edge load-balances automatically across however many replicas a service runs — this isn't something the app needs to implement itself. Replica count is a Railway dashboard/plan setting (Settings → scale on the service), not something exposed through deploys; bump it there if traffic ever needs it, and the existing session/DB setup (MySQL is a separate service, sessions are server-side) already works correctly across multiple replicas with no code changes.
+- **Chart.js is self-hosted** (`assets/js/vendor/chart.umd.min.js`) rather than loaded from a CDN — it was fetched from npm's registry and minified locally so its exact contents are known and verifiable, rather than trusting an unpinned third-party hash.
+
 ## 10. Security notes (already handled, but worth knowing)
 
 - All queries use PDO prepared statements — no string-concatenated SQL.

@@ -35,14 +35,16 @@ if (hasPermission('inventory.view')) {
         $stmt->execute([$branchId]);
         $lowStockItems = $stmt->fetchAll();
 
-        $stmt = $pdo->prepare(
-            "SELECT COALESCE(c.name, 'Uncategorized') AS category, SUM(bs.quantity) AS units
-             FROM branch_stock bs JOIN products p ON p.id = bs.product_id LEFT JOIN categories c ON c.id = p.category_id
-             WHERE bs.branch_id = ? AND p.status = 'active'
-             GROUP BY c.name ORDER BY units DESC LIMIT 6"
-        );
-        $stmt->execute([$branchId]);
-        $categoryBreakdown = $stmt->fetchAll();
+        $categoryBreakdown = cacheRemember("dash:category:$branchId", 60, function () use ($pdo, $branchId) {
+            $stmt = $pdo->prepare(
+                "SELECT COALESCE(c.name, 'Uncategorized') AS category, SUM(bs.quantity) AS units
+                 FROM branch_stock bs JOIN products p ON p.id = bs.product_id LEFT JOIN categories c ON c.id = p.category_id
+                 WHERE bs.branch_id = ? AND p.status = 'active'
+                 GROUP BY c.name ORDER BY units DESC LIMIT 6"
+            );
+            $stmt->execute([$branchId]);
+            return $stmt->fetchAll();
+        });
     } else {
         $lowStock = $pdo->query(
             "SELECT COUNT(*) c FROM branch_stock bs JOIN products p ON p.id = bs.product_id
@@ -56,12 +58,14 @@ if (hasPermission('inventory.view')) {
              ORDER BY bs.quantity ASC LIMIT 5"
         )->fetchAll();
 
-        $categoryBreakdown = $pdo->query(
-            "SELECT COALESCE(c.name, 'Uncategorized') AS category, SUM(bs.quantity) AS units
-             FROM branch_stock bs JOIN products p ON p.id = bs.product_id LEFT JOIN categories c ON c.id = p.category_id
-             WHERE p.status = 'active'
-             GROUP BY c.name ORDER BY units DESC LIMIT 6"
-        )->fetchAll();
+        $categoryBreakdown = cacheRemember('dash:category:all', 60, function () use ($pdo) {
+            return $pdo->query(
+                "SELECT COALESCE(c.name, 'Uncategorized') AS category, SUM(bs.quantity) AS units
+                 FROM branch_stock bs JOIN products p ON p.id = bs.product_id LEFT JOIN categories c ON c.id = p.category_id
+                 WHERE p.status = 'active'
+                 GROUP BY c.name ORDER BY units DESC LIMIT 6"
+            )->fetchAll();
+        });
     }
 }
 
@@ -97,14 +101,17 @@ if (hasPermission('orders.view')) {
     $recentOrders = $stmt->fetchAll();
 
     // Revenue for the last 14 days, zero-filled so the chart has no gaps
-    $stmt = $pdo->prepare(
-        "SELECT DATE(created_at) d, SUM(total_amount) s FROM orders
-         WHERE status = 'completed' AND created_at >= CURDATE() - INTERVAL 13 DAY $branchClause
-         GROUP BY DATE(created_at)"
-    );
-    $stmt->execute($branchParam);
-    $byDate = [];
-    foreach ($stmt->fetchAll() as $r) { $byDate[$r['d']] = (float)$r['s']; }
+    $byDate = cacheRemember("dash:trend:" . ($branchId ?? 'all'), 60, function () use ($pdo, $branchClause, $branchParam) {
+        $stmt = $pdo->prepare(
+            "SELECT DATE(created_at) d, SUM(total_amount) s FROM orders
+             WHERE status = 'completed' AND created_at >= CURDATE() - INTERVAL 13 DAY $branchClause
+             GROUP BY DATE(created_at)"
+        );
+        $stmt->execute($branchParam);
+        $byDate = [];
+        foreach ($stmt->fetchAll() as $r) { $byDate[$r['d']] = (float)$r['s']; }
+        return $byDate;
+    });
     for ($i = 13; $i >= 0; $i--) {
         $d = date('Y-m-d', strtotime("-$i days"));
         $revenueTrend[] = ['label' => date('d M', strtotime($d)), 'value' => $byDate[$d] ?? 0];
@@ -112,14 +119,16 @@ if (hasPermission('orders.view')) {
 
     // Only meaningful in "All branches" view — this month's revenue split by location
     if ($branchId === null) {
-        $branchRevenue = $pdo->query(
-            "SELECT b.name AS branch, COALESCE(SUM(o.total_amount),0) AS revenue
-             FROM branches b
-             LEFT JOIN orders o ON o.branch_id = b.id AND o.status = 'completed'
-                 AND MONTH(o.created_at) = MONTH(CURDATE()) AND YEAR(o.created_at) = YEAR(CURDATE())
-             WHERE b.is_active = 1
-             GROUP BY b.id ORDER BY revenue DESC"
-        )->fetchAll();
+        $branchRevenue = cacheRemember('dash:branch_revenue', 60, function () use ($pdo) {
+            return $pdo->query(
+                "SELECT b.name AS branch, COALESCE(SUM(o.total_amount),0) AS revenue
+                 FROM branches b
+                 LEFT JOIN orders o ON o.branch_id = b.id AND o.status = 'completed'
+                     AND MONTH(o.created_at) = MONTH(CURDATE()) AND YEAR(o.created_at) = YEAR(CURDATE())
+                 WHERE b.is_active = 1
+                 GROUP BY b.id ORDER BY revenue DESC"
+            )->fetchAll();
+        });
     }
 }
 
@@ -202,14 +211,20 @@ require_once __DIR__ . '/../includes/header.php';
   <?php if (hasPermission('orders.view')): ?>
   <section class="panel chart-card">
     <h2><?= $branchId === null && $branchRevenue ? 'Revenue by branch — this month' : 'Revenue — last 14 days' ?></h2>
-    <canvas id="revenueChart" height="90"></canvas>
+    <div class="chart-wrap">
+      <div class="chart-skeleton"></div>
+      <canvas id="revenueChart" height="90"></canvas>
+    </div>
   </section>
   <?php endif; ?>
 
   <?php if (hasPermission('inventory.view') && $categoryBreakdown): ?>
   <section class="panel chart-card">
     <h2>Stock by category<?= $branchId !== null ? ' — ' . clean(getBranchName($branchId, $pdo)) : '' ?></h2>
-    <canvas id="categoryChart" height="90"></canvas>
+    <div class="chart-wrap">
+      <div class="chart-skeleton"></div>
+      <canvas id="categoryChart" height="90"></canvas>
+    </div>
   </section>
   <?php endif; ?>
 </div>
@@ -272,11 +287,19 @@ require_once __DIR__ . '/../includes/header.php';
 </div>
 
 <?php if (hasPermission('orders.view') || (hasPermission('inventory.view') && $categoryBreakdown)): ?>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script defer>
+function hideChartSkeleton(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  const wrap = canvas && canvas.closest('.chart-wrap');
+  const sk = wrap && wrap.querySelector('.chart-skeleton');
+  if (sk) sk.remove();
+}
+</script>
+<script defer src="<?= BASE_URL ?>assets/js/vendor/chart.umd.min.js"></script>
 <?php endif; ?>
 
 <?php if (hasPermission('orders.view')): ?>
-<script>
+<script defer>
 (function () {
   <?php if ($branchId === null && $branchRevenue): ?>
   const labels = <?= json_encode(array_column($branchRevenue, 'branch')) ?>;
@@ -292,6 +315,7 @@ require_once __DIR__ . '/../includes/header.php';
       }
     }
   });
+  hideChartSkeleton('revenueChart');
   <?php else: ?>
   const labels = <?= json_encode(array_column($revenueTrend, 'label')) ?>;
   const values = <?= json_encode(array_column($revenueTrend, 'value')) ?>;
@@ -312,13 +336,14 @@ require_once __DIR__ . '/../includes/header.php';
       }
     }
   });
+  hideChartSkeleton('revenueChart');
   <?php endif; ?>
 })();
 </script>
 <?php endif; ?>
 
 <?php if (hasPermission('inventory.view') && $categoryBreakdown): ?>
-<script>
+<script defer>
 (function () {
   new Chart(document.getElementById('categoryChart'), {
     type: 'doughnut',
@@ -335,6 +360,7 @@ require_once __DIR__ . '/../includes/header.php';
       plugins: { legend: { position: 'bottom', labels: { font: { family: 'Inter', size: 11 }, boxWidth: 10, padding: 12 } } }
     }
   });
+  hideChartSkeleton('categoryChart');
 })();
 </script>
 <?php endif; ?>

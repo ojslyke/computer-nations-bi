@@ -15,26 +15,24 @@ rm -f /etc/apache2/mods-enabled/mpm_event.conf /etc/apache2/mods-enabled/mpm_eve
 ln -sf /etc/apache2/mods-available/mpm_prefork.conf /etc/apache2/mods-enabled/mpm_prefork.conf
 ln -sf /etc/apache2/mods-available/mpm_prefork.load /etc/apache2/mods-enabled/mpm_prefork.load
 
-echo "--- mods-enabled MPM files ---"
-ls -la /etc/apache2/mods-enabled/ | grep -i mpm
-echo "--- apache2ctl -M (loaded modules) ---"
-apache2ctl -M 2>&1 | grep -i mpm
-echo "------------------------------"
-
 # --- Wait for the MySQL service to accept connections -------------------
 # Railway's MySQL template uses a self-signed cert. The client installed
 # here is MariaDB's (Debian's default-mysql-client), whose flag for
 # "encrypt, don't verify the certificate chain" is --ssl-verify-server-cert=0
 # — NOT --ssl-mode, which this client doesn't recognize at all.
 MYSQL_SSL_OPT="--ssl-verify-server-cert=0"
-echo "Client: $(mysql --version)"
+
+# Password via MYSQL_PWD (an env var only this process and its children can
+# read) rather than -p on the command line, which would be visible to
+# anyone who can list processes in this container (`ps aux`) while it runs.
+export MYSQL_PWD="$MYSQLPASSWORD"
 
 if [ -n "$MYSQLHOST" ]; then
   echo "Waiting for MySQL at ${MYSQLHOST}:${MYSQLPORT:-3306}..."
   MYSQL_UP=0
   LAST_ERR=""
   for i in $(seq 1 30); do
-    LAST_ERR=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" -p"$MYSQLPASSWORD" $MYSQL_SSL_OPT -e "SELECT 1;" 2>&1 >/dev/null)
+    LAST_ERR=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" $MYSQL_SSL_OPT -e "SELECT 1;" 2>&1 >/dev/null)
     if [ -z "$LAST_ERR" ]; then
       echo "MySQL is up."
       MYSQL_UP=1
@@ -45,13 +43,13 @@ if [ -n "$MYSQLHOST" ]; then
 
   if [ "$MYSQL_UP" = "1" ]; then
     # --- First boot only: the schema hasn't been imported yet -----------
-    TABLE_COUNT=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" -p"$MYSQLPASSWORD" $MYSQL_SSL_OPT \
+    TABLE_COUNT=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" $MYSQL_SSL_OPT \
       -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '${MYSQLDATABASE}' AND table_name = 'users';" 2>&1)
     echo "Existing 'users' table check: ${TABLE_COUNT}"
 
     if [ "$TABLE_COUNT" = "0" ]; then
       echo "No schema found — importing database/schema.sql..."
-      IMPORT_ERR=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" -p"$MYSQLPASSWORD" $MYSQL_SSL_OPT "$MYSQLDATABASE" < /var/www/html/database/schema.sql 2>&1 >/dev/null)
+      IMPORT_ERR=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" $MYSQL_SSL_OPT "$MYSQLDATABASE" < /var/www/html/database/schema.sql 2>&1 >/dev/null)
       if [ -z "$IMPORT_ERR" ]; then
         echo "Schema imported successfully."
       else

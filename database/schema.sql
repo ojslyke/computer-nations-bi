@@ -457,3 +457,43 @@ INSERT INTO purchase_orders (po_number, branch_id, supplier_id, user_id, status,
 ('PO-20260101-SAMPL', 1, 1, 1, 'ordered', 'Restocking laptops ahead of back-to-school demand');
 INSERT INTO purchase_order_items (po_id, product_id, quantity_ordered, unit_cost) VALUES
 (1, 2, 10, 300000);
+
+-- ---------------------------------------------------------------------
+-- Performance indexes — FK columns already get an automatic index in
+-- InnoDB, so these cover the columns that don't: status filters, date
+-- sorts on list pages, and the composite lookups the app actually runs.
+-- ---------------------------------------------------------------------
+CREATE INDEX idx_orders_status ON orders(status);
+CREATE INDEX idx_orders_branch_status ON orders(branch_id, status);
+CREATE INDEX idx_orders_created_at ON orders(created_at);
+
+CREATE INDEX idx_stock_movements_branch_product ON stock_movements(branch_id, product_id);
+CREATE INDEX idx_stock_movements_category ON stock_movements(category);
+CREATE INDEX idx_stock_movements_created_at ON stock_movements(created_at);
+
+CREATE INDEX idx_purchase_orders_status ON purchase_orders(status);
+CREATE INDEX idx_purchase_orders_created_at ON purchase_orders(created_at);
+
+CREATE INDEX idx_products_status ON products(status);
+
+CREATE INDEX idx_sav_items_status ON sav_items(status);
+CREATE INDEX idx_sav_items_created_at ON sav_items(created_at);
+
+CREATE INDEX idx_stock_transfers_status ON stock_transfers(status);
+CREATE INDEX idx_stock_transfers_type ON stock_transfers(type);
+
+CREATE INDEX idx_activity_logs_created_at ON activity_logs(created_at);
+
+CREATE INDEX idx_users_status ON users(status);
+
+-- ---------------------------------------------------------------------
+-- Rate limiting — tracks attempts per IP on sensitive endpoints
+-- (login, password reset) to slow down brute-force/abuse.
+-- ---------------------------------------------------------------------
+CREATE TABLE rate_limit_attempts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    bucket VARCHAR(50) NOT NULL,
+    identifier VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_rate_limit_lookup (bucket, identifier, created_at)
+) ENGINE=InnoDB;

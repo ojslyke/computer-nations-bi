@@ -6,13 +6,22 @@ requirePermission('activity.view');
 $pageTitle = 'Activity log';
 
 $userFilter = (int)($_GET['user'] ?? 0);
-$sql = "SELECT al.*, u.full_name FROM activity_logs al LEFT JOIN users u ON u.id = al.user_id";
-$params = [];
-if ($userFilter) {
-    $sql .= " WHERE al.user_id = ?";
-    $params[] = $userFilter;
-}
-$sql .= " ORDER BY al.created_at DESC LIMIT 300";
+$perPage = 50;
+$page = max(1, (int)($_GET['page'] ?? 1));
+$offset = ($page - 1) * $perPage;
+
+$whereClause = $userFilter ? " WHERE al.user_id = ?" : "";
+$params = $userFilter ? [$userFilter] : [];
+
+$countStmt = $pdo->prepare("SELECT COUNT(*) c FROM activity_logs al" . $whereClause);
+$countStmt->execute($params);
+$totalCount = (int)$countStmt->fetch()['c'];
+$totalPages = max(1, (int)ceil($totalCount / $perPage));
+$page = min($page, $totalPages);
+$offset = ($page - 1) * $perPage;
+
+$sql = "SELECT al.*, u.full_name FROM activity_logs al LEFT JOIN users u ON u.id = al.user_id" . $whereClause
+     . " ORDER BY al.created_at DESC LIMIT $perPage OFFSET $offset";
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $logs = $stmt->fetchAll();
@@ -37,7 +46,7 @@ require_once __DIR__ . '/../../includes/header.php';
 ?>
 
 <form method="get" class="toolbar">
-  <p class="muted">The last 300 actions across the system.</p>
+  <p class="muted"><?= number_format($totalCount) ?> action<?= $totalCount === 1 ? '' : 's' ?> recorded<?= $totalCount > 0 ? ' · page ' . $page . ' of ' . $totalPages : '' ?></p>
   <div class="search-form">
     <select name="user" onchange="this.form.submit()">
       <option value="0">All users</option>
@@ -61,8 +70,16 @@ require_once __DIR__ . '/../../includes/header.php';
       </div>
     <?php endforeach; ?>
   </div>
+  <?php if ($totalPages > 1): ?>
+    <div class="pagination">
+      <?php $qs = $userFilter ? '&user=' . $userFilter : ''; ?>
+      <a href="?page=<?= max(1, $page - 1) ?><?= $qs ?>" class="btn btn-secondary <?= $page <= 1 ? 'disabled' : '' ?>">&larr; Newer</a>
+      <span class="muted small">Page <?= $page ?> of <?= $totalPages ?></span>
+      <a href="?page=<?= min($totalPages, $page + 1) ?><?= $qs ?>" class="btn btn-secondary <?= $page >= $totalPages ? 'disabled' : '' ?>">Older &rarr;</a>
+    </div>
+  <?php endif; ?>
   <?php else: ?>
-    <p class="empty-state">No activity recorded yet.</p>
+    <p class="empty-state">No activity recorded<?= $userFilter ? ' for this user' : '' ?>.</p>
   <?php endif; ?>
 </section>
 

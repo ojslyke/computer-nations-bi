@@ -7,9 +7,15 @@ if (isLoggedIn()) {
 }
 
 $submitted = false;
+$rateLimited = false;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrfCheck();
+
+    if (!rateLimitCheck($pdo, 'forgot_password', requestIp(), 5, 3600)) {
+        $rateLimited = true;
+    } else {
+    rateLimitRecord($pdo, 'forgot_password', requestIp());
     $email = trim($_POST['email'] ?? '');
 
     if ($email !== '') {
@@ -41,6 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $submitted = true;
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -48,6 +55,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem('cn-theme');
+    if (saved === 'dark' || saved === 'light') {
+      document.documentElement.setAttribute('data-theme', saved);
+    }
+  } catch (e) {}
+})();
+</script>
 <title>Forgot password — <?= SITE_NAME ?></title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -68,7 +85,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <div class="auth-card">
     <h1>Forgot your password?</h1>
 
-    <?php if ($submitted): ?>
+    <?php if ($rateLimited): ?>
+      <div class="alert alert-error">Too many requests from this connection. Wait a while and try again.</div>
+      <p class="muted small" style="margin-top:14px;"><a href="<?= BASE_URL ?>auth/login.php" class="link">Back to login</a></p>
+    <?php elseif ($submitted): ?>
       <div class="alert alert-success">If that's an administrator account, a reset link has been sent to it — check your inbox (and spam folder). The link expires in 1 hour.</div>
       <p class="muted small" style="margin-top:14px;"><a href="<?= BASE_URL ?>auth/login.php" class="link">Back to login</a></p>
     <?php else: ?>

@@ -128,3 +128,95 @@ function workingHoursMessage() {
         date('g:i A', mktime(WORKING_HOURS_END, 0, 0))
     );
 }
+
+/**
+ * Simple DB-backed rate limiter for abuse-prone endpoints (login, password
+ * reset). Returns true if the identifier (usually the requester's IP) is
+ * still within the allowed number of attempts for this bucket in the
+ * trailing window; false if they've hit the limit and should be blocked.
+ */
+function rateLimitCheck($pdo, $bucket, $identifier, $maxAttempts, $windowSeconds) {
+    $stmt = $pdo->prepare(
+        "SELECT COUNT(*) c FROM rate_limit_attempts WHERE bucket = ? AND identifier = ? AND created_at > (NOW() - INTERVAL ? SECOND)"
+    );
+    $stmt->execute([$bucket, $identifier, $windowSeconds]);
+    return (int)$stmt->fetch()['c'] < $maxAttempts;
+}
+
+function rateLimitRecord($pdo, $bucket, $identifier) {
+    $pdo->prepare("INSERT INTO rate_limit_attempts (bucket, identifier) VALUES (?, ?)")
+        ->execute([$bucket, $identifier]);
+    // Opportunistic cleanup so this table never grows unbounded — cheap,
+    // and fine to skip most of the time (1 in ~50 requests).
+    if (random_int(1, 50) === 1) {
+        $pdo->exec("DELETE FROM rate_limit_attempts WHERE created_at < (NOW() - INTERVAL 1 DAY)");
+    }
+}
+
+function requestIp() {
+    return $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+}
+
+/**
+ * Cache the result of an expensive (usually aggregate) query in APCu for
+ * a short TTL — enough to take repeated dashboard loads off the database
+ * without the numbers ever going stale for long. Falls back to just
+ * running the callback every time if APCu isn't available (e.g. locally
+ * without the extension), so nothing breaks without it.
+ */
+function cacheRemember($key, $ttlSeconds, callable $callback) {
+    if (!function_exists('apcu_fetch')) {
+        return $callback();
+    }
+    $found = false;
+    $value = apcu_fetch($key, $found);
+    if ($found) {
+        return $value;
+    }
+    $value = $callback();
+    apcu_store($key, $value, $ttlSeconds);
+    return $value;
+}
+
+/**
+ * Resize (if needed) and re-compress an uploaded product photo before
+ * saving it — keeps product images from bloating page weight. Caller has
+ * already verified $tmpPath is a genuine image via getimagesize(); $type
+ * is the IMAGETYPE_* constant it returned.
+ */
+function compressAndSaveProductImage($tmpPath, $type, $destPath, $maxDimension = 1000) {
+    $image = match ($type) {
+        IMAGETYPE_JPEG => @imagecreatefromjpeg($tmpPath),
+        IMAGETYPE_PNG  => @imagecreatefrompng($tmpPath),
+        IMAGETYPE_WEBP => @imagecreatefromwebp($tmpPath),
+        default        => false,
+    };
+    if (!$image) {
+        return false; // fall back to a plain copy if GD couldn't decode it
+    }
+
+    $width = imagesx($image);
+    $height = imagesy($image);
+    if ($width > $maxDimension || $height > $maxDimension) {
+        $ratio = min($maxDimension / $width, $maxDimension / $height);
+        $newWidth = (int)round($width * $ratio);
+        $newHeight = (int)round($height * $ratio);
+        $resized = imagecreatetruecolor($newWidth, $newHeight);
+        if ($type === IMAGETYPE_PNG || $type === IMAGETYPE_WEBP) {
+            imagealphablending($resized, false);
+            imagesavealpha($resized, true);
+        }
+        imagecopyresampled($resized, $image, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
+        imagedestroy($image);
+        $image = $resized;
+    }
+
+    $saved = match ($type) {
+        IMAGETYPE_JPEG => imagejpeg($image, $destPath, 82),
+        IMAGETYPE_PNG  => imagepng($image, $destPath, 7),
+        IMAGETYPE_WEBP => imagewebp($image, $destPath, 82),
+        default        => false,
+    };
+    imagedestroy($image);
+    return $saved;
+}

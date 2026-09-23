@@ -82,6 +82,10 @@ require_once __DIR__ . '/../../includes/header.php';
 
 <section class="panel panel-form">
   <h2>Edit product <span class="mono muted">#<?= (int)$product['id'] ?> · <?= clean($product['sku']) ?></span></h2>
+
+  <?php if (!empty($product['image'])): ?>
+    <img src="<?= UPLOAD_URL . clean($product['image']) ?>" alt="<?= clean($product['name']) ?>" style="width:96px; height:96px; object-fit:cover; border-radius:var(--radius-sm); margin-bottom:16px;" loading="lazy" decoding="async">
+  <?php endif; ?>
   <?php if ($product['creator_name']): ?><p class="muted small">Added by <?= clean($product['creator_name']) ?></p><?php endif; ?>
 
   <?php foreach ($errors as $err): ?>

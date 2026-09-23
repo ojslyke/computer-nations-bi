@@ -2,6 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem('cn-theme');
+    if (saved === 'dark' || saved === 'light') {
+      document.documentElement.setAttribute('data-theme', saved);
+    }
+  } catch (e) {}
+})();
+</script>
 <title>Access denied — <?= SITE_NAME ?></title>
 <link rel="stylesheet" href="<?= BASE_URL ?>assets/css/style.css">
 </head>

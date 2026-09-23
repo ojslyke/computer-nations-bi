@@ -2,6 +2,51 @@
 /**
  * Global site configuration — included at the top of every page.
  */
+
+// APP_ENV=production is set explicitly in the Docker image (see Dockerfile);
+// local XAMPP runs have no such variable, so they default to 'local'.
+define('APP_ENV', getenv('APP_ENV') ?: 'local');
+define('IS_PRODUCTION', APP_ENV === 'production');
+
+if (IS_PRODUCTION) {
+    // Never leak stack traces / file paths to a visitor — log the real
+    // error server-side instead and show a generic page.
+    ini_set('display_errors', '0');
+    ini_set('display_startup_errors', '0');
+    error_reporting(E_ALL);
+    ini_set('log_errors', '1');
+
+    set_exception_handler(function ($e) {
+        error_log('Uncaught exception: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+        http_response_code(500);
+        require __DIR__ . '/../500.php';
+        exit;
+    });
+    set_error_handler(function ($severity, $message, $file, $line) {
+        if (!(error_reporting() & $severity)) return false;
+        error_log("PHP error [$severity]: $message in $file:$line");
+        return true; // suppress default HTML output of the error itself
+    });
+} else {
+    ini_set('display_errors', '1');
+    error_reporting(E_ALL);
+}
+
+// A conservative set of security headers on every response. The CSP allows
+// the specific external hosts this app actually loads from (Google Fonts,
+// the Chart.js CDN) and 'unsafe-inline' for script/style — the app uses
+// inline <script> blocks throughout rather than a bundler, so a stricter
+// policy would break real functionality; this still blocks loading from
+// anywhere else, which is the main point of a CSP.
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('Permissions-Policy: geolocation=(), microphone=(), camera=()');
+header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'");
+if (IS_PRODUCTION) {
+    header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+}
+
 $isHttpsRequest = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
     || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
 

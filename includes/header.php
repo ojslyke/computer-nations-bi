@@ -54,6 +54,17 @@ if (hasPermission('inventory.view')) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>
+// Applied before the stylesheet loads, so there's no flash of the wrong theme.
+(function () {
+  try {
+    var saved = localStorage.getItem('cn-theme');
+    if (saved === 'dark' || saved === 'light') {
+      document.documentElement.setAttribute('data-theme', saved);
+    }
+  } catch (e) {}
+})();
+</script>
 <title><?= isset($pageTitle) ? clean($pageTitle) . ' — ' : '' ?><?= SITE_NAME ?></title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -242,6 +253,9 @@ if (hasPermission('inventory.view')) {
       <?php endif; ?>
 
       <div class="topbar-actions">
+        <button type="button" class="topbar-icon-btn" id="themeToggleBtn" aria-label="Toggle dark mode">
+          <span id="themeToggleIcon"><?= icon('moon', 18) ?></span>
+        </button>
         <?php if (hasPermission('inventory.view')): ?>
         <div class="dropdown">
           <button type="button" class="topbar-icon-btn dropdown-trigger" aria-label="Notifications">
