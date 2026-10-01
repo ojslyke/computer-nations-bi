@@ -80,10 +80,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $total += $price * $item['quantity'];
             }
 
+            $paymentMethod = in_array($_POST['payment_method'] ?? '', ['cash','mobile_money','bank_transfer'], true)
+                ? $_POST['payment_method'] : 'cash';
+            $isInstallment = !empty($_POST['is_installment']);
+            $depositAmount = $isInstallment
+                ? max(0, min($total, round((float)($_POST['deposit_amount'] ?? 0), 2)))
+                : $total;
+            $paymentStatus = $depositAmount >= $total ? 'paid' : ($depositAmount > 0 ? 'partial' : 'unpaid');
+
             $pdo->prepare(
-                "INSERT INTO orders (order_number, branch_id, customer_id, user_id, status, total_amount) VALUES (?,?,?,?,?,?)"
-            )->execute([$orderNumber, $branchId, $customerId, $_SESSION['user_id'], 'completed', $total]);
+                "INSERT INTO orders (order_number, branch_id, customer_id, user_id, status, total_amount, payment_method, payment_status, amount_paid) VALUES (?,?,?,?,?,?,?,?,?)"
+            )->execute([$orderNumber, $branchId, $customerId, $_SESSION['user_id'], 'completed', $total, $paymentMethod, $paymentStatus, $depositAmount]);
             $orderId = $pdo->lastInsertId();
+
+            if ($depositAmount > 0) {
+                $pdo->prepare(
+                    "INSERT INTO installment_payments (order_id, amount, payment_method, notes, received_by) VALUES (?,?,?,?,?)"
+                )->execute([$orderId, $depositAmount, $paymentMethod, $isInstallment ? 'Initial deposit at sale' : 'Paid in full at sale', $_SESSION['user_id']]);
+                if ($paymentMethod === 'cash') {
+                    refreshCashLedgerCascade($pdo, $branchId, date('Y-m-d'));
+                }
+            }
 
             foreach ($lineItems as $item) {
                 $p = $productLookup[$item['product_id']];
@@ -138,6 +155,27 @@ require_once __DIR__ . '/../../includes/header.php';
       </select>
     </div>
 
+    <div class="form-row">
+      <div class="form-field">
+        <label>Payment method</label>
+        <select name="payment_method">
+          <option value="cash">Cash</option>
+          <option value="mobile_money">Mobile Money</option>
+          <option value="bank_transfer">Bank transfer</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label class="checkbox-row" style="margin-top:22px;">
+          <input type="checkbox" name="is_installment" value="1" id="installmentToggle"> Customer is paying in installments
+        </label>
+      </div>
+    </div>
+    <div class="form-field" id="depositField" style="display:none;">
+      <label>Deposit paid today</label>
+      <input type="number" name="deposit_amount" min="0" step="0.01" placeholder="0 for no deposit yet">
+      <span class="form-hint">The remaining balance can be recorded later from Installments.</span>
+    </div>
+
     <?php if ($products): ?>
     <table class="data-table" id="lineItemsTable">
       <thead><tr><th>Product</th><th style="width:110px">Quantity</th><th style="width:130px">Price paid</th><th style="width:140px">Line total</th><th></th></tr></thead>
@@ -177,6 +215,10 @@ require_once __DIR__ . '/../../includes/header.php';
 </section>
 
 <script>
+document.getElementById('installmentToggle').addEventListener('change', function (e) {
+  document.getElementById('depositField').style.display = e.target.checked ? '' : 'none';
+});
+
 // Dynamic order line items: add/remove rows and keep the running total in sync.
 (function () {
   const table = document.getElementById('lineItemsTable');

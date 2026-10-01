@@ -171,6 +171,9 @@ CREATE TABLE orders (
     user_id INT NOT NULL,                  -- staff member who created it
     status ENUM('pending','completed','cancelled') NOT NULL DEFAULT 'pending',
     total_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+    payment_method ENUM('cash','mobile_money','bank_transfer') NOT NULL DEFAULT 'cash',
+    payment_status ENUM('paid','partial','unpaid') NOT NULL DEFAULT 'paid',
+    amount_paid DECIMAL(12,2) NOT NULL DEFAULT 0,  -- running total across all installments; for payment_status='paid' this equals total_amount
     cancelled_by INT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (branch_id) REFERENCES branches(id),
@@ -334,6 +337,103 @@ CREATE TABLE stock_audit_items (
 ) ENGINE=InnoDB;
 
 -- ---------------------------------------------------------------------
+-- 9.6 FINANCE — installment payments, expenses, refunds, fund transfers
+--     to bank/credit union, and a daily cash reconciliation ledger where
+--     each day's opening balance is carried forward from the prior day's
+--     closing balance.
+-- ---------------------------------------------------------------------
+
+-- A customer paying in installments: the order keeps its full total_amount
+-- and starts payment_status='partial'/'unpaid'; each payment received here
+-- adds to orders.amount_paid until it reaches the total, at which point
+-- payment_status flips to 'paid'.
+CREATE TABLE installment_payments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id INT NOT NULL,
+    amount DECIMAL(12,2) NOT NULL,
+    payment_method ENUM('cash','mobile_money','bank_transfer') NOT NULL DEFAULT 'cash',
+    notes VARCHAR(255) DEFAULT NULL,
+    received_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (order_id) REFERENCES orders(id),
+    FOREIGN KEY (received_by) REFERENCES users(id)
+) ENGINE=InnoDB;
+
+CREATE TABLE expenses (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    branch_id INT NOT NULL,
+    expense_date DATE NOT NULL,
+    category VARCHAR(100) NOT NULL,   -- e.g. Rent, Utilities, Salaries, Transport, Supplies
+    description VARCHAR(255) DEFAULT NULL,
+    amount DECIMAL(12,2) NOT NULL,
+    payment_method ENUM('cash','mobile_money','bank_transfer') NOT NULL DEFAULT 'cash',
+    recorded_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (branch_id) REFERENCES branches(id),
+    FOREIGN KEY (recorded_by) REFERENCES users(id)
+) ENGINE=InnoDB;
+
+CREATE TABLE refunds (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id INT NOT NULL,
+    amount DECIMAL(12,2) NOT NULL,
+    reason VARCHAR(255) NOT NULL,
+    payment_method ENUM('cash','mobile_money','bank_transfer') NOT NULL DEFAULT 'cash',
+    processed_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (order_id) REFERENCES orders(id),
+    FOREIGN KEY (processed_by) REFERENCES users(id)
+) ENGINE=InnoDB;
+
+-- Moving money OUT of a branch's till into an actual bank/credit union
+-- account. Restricted to roles with funds.manage (Admin/Manager/Accountant
+-- by default) since this is who's trusted to move physical/electronic cash.
+CREATE TABLE fund_transfers (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    transfer_number VARCHAR(30) NOT NULL UNIQUE,
+    branch_id INT NOT NULL,
+    destination VARCHAR(150) NOT NULL,   -- e.g. "Afriland First Bank - Computer Nations Ltd"
+    amount DECIMAL(12,2) NOT NULL,
+    method ENUM('cash','mobile_money','bank_transfer') NOT NULL DEFAULT 'bank_transfer',
+    notes VARCHAR(255) DEFAULT NULL,
+    transferred_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (branch_id) REFERENCES branches(id),
+    FOREIGN KEY (transferred_by) REFERENCES users(id)
+) ENGINE=InnoDB;
+
+-- One row per branch per day. opening_cash is always carried forward from
+-- the previous day's closing_cash (computed, not re-entered), except the
+-- very first day for a branch, which can be set manually once.
+CREATE TABLE cash_ledger (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    branch_id INT NOT NULL,
+    ledger_date DATE NOT NULL,
+    opening_cash DECIMAL(12,2) NOT NULL DEFAULT 0,
+    cash_in DECIMAL(12,2) NOT NULL DEFAULT 0,
+    cash_out DECIMAL(12,2) NOT NULL DEFAULT 0,
+    closing_cash DECIMAL(12,2) NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_branch_date (branch_id, ledger_date),
+    FOREIGN KEY (branch_id) REFERENCES branches(id)
+) ENGINE=InnoDB;
+
+-- Per-branch, per-day sales rollup — refreshed on a 30-minute cycle rather
+-- than recomputed from raw orders on every dashboard load. Backs both the
+-- "Daily Sales Performance by Store" widget and the secretary/accountant
+-- downloadable reports.
+CREATE TABLE daily_sales_summary (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    branch_id INT NOT NULL,
+    summary_date DATE NOT NULL,
+    orders_count INT NOT NULL DEFAULT 0,
+    revenue DECIMAL(12,2) NOT NULL DEFAULT 0,
+    refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_branch_summary_date (branch_id, summary_date),
+    FOREIGN KEY (branch_id) REFERENCES branches(id)
+) ENGINE=InnoDB;
+
+-- ---------------------------------------------------------------------
 -- 10. ACTIVITY LOG (audit trail — who did what, when)
 -- ---------------------------------------------------------------------
 CREATE TABLE activity_logs (
@@ -384,7 +484,8 @@ INSERT INTO roles (name, description) VALUES
 ('Inventory Staff', 'Manages stock levels, transfers and suppliers at their branch'),
 ('Technician', 'Repairs SAV items assigned to them, at their branch'),
 ('Accountant', 'Views financial reports, orders and stock audits for reconciliation'),
-('Secretary', 'Handles customers and order entry at their branch');
+('Secretary', 'Handles customers and order entry at their branch'),
+('Data Analyst', 'Read-only visibility into reports, dashboards and activity across the system');
 
 -- Permissions
 INSERT INTO permissions (slug, label, module) VALUES
@@ -424,6 +525,14 @@ INSERT INTO permissions (slug, label, module) VALUES
 ('audit.view',            'View stock audits',              'audit'),
 ('audit.create',          'Conduct a stock audit (count)',  'audit'),
 ('audit.export',          'Export stock audits to CSV',     'audit'),
+('expenses.view',         'View company expenses',          'finance'),
+('expenses.manage',       'Record company expenses',        'finance'),
+('refunds.view',          'View customer refunds',          'finance'),
+('refunds.manage',        'Process customer refunds',       'finance'),
+('installments.view',     'View installment payments',      'finance'),
+('installments.manage',   'Record installment payments',    'finance'),
+('funds.view',            'View fund transfers to bank/credit union', 'finance'),
+('funds.manage',          'Record fund transfers to bank/credit union', 'finance'),
 ('users.manage',          'Manage users and roles',         'users');
 
 -- Role <-> Permission mapping
@@ -439,7 +548,7 @@ SELECT 2, id FROM permissions WHERE slug != 'users.manage';
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT 3, id FROM permissions
 WHERE slug IN ('dashboard.view','inventory.view','orders.view','orders.create',
-               'customers.view','customers.manage');
+               'customers.view','customers.manage','installments.view','installments.manage');
 
 -- Inventory Staff: dashboard, full inventory + stock + transfers + SAV + suppliers + purchasing
 -- (Expeditions between towns are left to Admin/Manager by default — a bigger
@@ -459,17 +568,30 @@ WHERE slug IN ('dashboard.view','inventory.view','inventory.create','inventory.e
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT 5, id FROM permissions WHERE slug IN ('dashboard.view','sav.technician');
 
--- Accountant: financial visibility and reconciliation, no operational control
+-- Accountant: full finance management (funds/expenses/refunds/installments)
+-- plus financial reporting visibility, no operational/inventory control
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT 6, id FROM permissions
 WHERE slug IN ('dashboard.view','reports.view','reports.export','orders.view',
-               'purchasing.view','activity.view','audit.view','audit.export');
+               'purchasing.view','activity.view','audit.view','audit.export',
+               'expenses.view','expenses.manage','refunds.view','refunds.manage',
+               'installments.view','installments.manage','funds.view','funds.manage');
 
--- Secretary: front-desk — customers and order entry, nothing operational
+-- Secretary: front-desk — customers, order entry, and collecting installment
+-- payments against orders; nothing operational or finance-wide
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT 7, id FROM permissions
 WHERE slug IN ('dashboard.view','customers.view','customers.manage',
-               'orders.view','orders.create','suppliers.view');
+               'orders.view','orders.create','suppliers.view',
+               'installments.view','installments.manage');
+
+-- Data Analyst: read-only across reports/dashboards/activity — no write
+-- access anywhere, including finance (they analyze, they don't transact)
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT 8, id FROM permissions
+WHERE slug IN ('dashboard.view','reports.view','reports.export','activity.view',
+               'audit.view','audit.export','orders.view','purchasing.view',
+               'expenses.view','refunds.view','installments.view','funds.view');
 
 -- Default admin user (branch_id NULL = access to all branches)
 -- username: admin | password: ComputerNationsBIset — CHANGE THIS AFTER FIRST LOGIN

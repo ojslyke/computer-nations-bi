@@ -155,6 +155,32 @@ if (hasPermission('inventory.view')) {
           <?= icon('customers') ?> Customers
         </a>
         <?php endif; ?>
+        <?php if (hasPermission('installments.view')): ?>
+        <a href="<?= BASE_URL ?>modules/installments/index.php" class="<?= navActive($currentDir, 'installments') ?>">
+          <?= icon('box-check') ?> Installments
+        </a>
+        <?php endif; ?>
+      </nav>
+      <?php endif; ?>
+
+      <?php if (hasPermission('expenses.view') || hasPermission('refunds.view') || hasPermission('funds.view')): ?>
+      <div class="nav-group-label">Finance</div>
+      <nav class="sidebar-nav">
+        <?php if (hasPermission('expenses.view')): ?>
+        <a href="<?= BASE_URL ?>modules/expenses/index.php" class="<?= navActive($currentDir, 'expenses') ?>">
+          <?= icon('purchasing') ?> Expenses
+        </a>
+        <?php endif; ?>
+        <?php if (hasPermission('refunds.view')): ?>
+        <a href="<?= BASE_URL ?>modules/refunds/index.php" class="<?= navActive($currentDir, 'refunds') ?>">
+          <?= icon('transfer') ?> Refunds
+        </a>
+        <?php endif; ?>
+        <?php if (hasPermission('funds.view')): ?>
+        <a href="<?= BASE_URL ?>modules/funds/index.php" class="<?= navActive($currentDir, 'funds') ?>">
+          <?= icon('reports') ?> Fund transfers
+        </a>
+        <?php endif; ?>
       </nav>
       <?php endif; ?>
 

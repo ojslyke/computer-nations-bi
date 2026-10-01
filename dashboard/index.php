@@ -14,6 +14,21 @@ $recentOrders  = [];
 $revenueTrend  = [];
 $categoryBreakdown = [];
 $branchRevenue = [];
+$dailyPerformanceByStore = [];
+
+// "Daily Sales Performance by Store" — refreshed at most once every 30
+// minutes (see ensureDailySalesSummaryFresh) rather than recomputed from
+// raw orders on every single dashboard load.
+if (hasPermission('orders.view') && $branchId === null) {
+    ensureDailySalesSummaryFresh($pdo);
+    $dailyPerformanceByStore = $pdo->prepare(
+        "SELECT b.id, b.name, COALESCE(d.orders_count,0) AS orders_count, COALESCE(d.revenue,0) AS revenue
+         FROM branches b LEFT JOIN daily_sales_summary d ON d.branch_id = b.id AND d.summary_date = ?
+         WHERE b.is_active = 1 ORDER BY revenue DESC"
+    );
+    $dailyPerformanceByStore->execute([date('Y-m-d')]);
+    $dailyPerformanceByStore = $dailyPerformanceByStore->fetchAll();
+}
 
 if (hasPermission('inventory.view')) {
     $totalProducts = $pdo->query("SELECT COUNT(*) c FROM products WHERE status='active'")->fetch()['c'];
@@ -231,6 +246,27 @@ require_once __DIR__ . '/../includes/header.php';
 <?php endif; ?>
 
 <div class="panel-grid">
+
+  <?php if ($dailyPerformanceByStore): ?>
+  <section class="panel">
+    <h2>Daily sales performance by store <span class="mono muted small">· <?= date('d M Y') ?></span></h2>
+    <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Branch</th><th>Orders today</th><th>Revenue today</th></tr></thead>
+      <tbody>
+        <?php foreach ($dailyPerformanceByStore as $row): ?>
+        <tr>
+          <td><?= clean($row['name']) ?></td>
+          <td class="mono"><?= (int)$row['orders_count'] ?></td>
+          <td class="mono"><?= formatMoney($row['revenue']) ?></td>
+        </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+    </div>
+    <p class="muted small" style="margin-top:8px;">Updates automatically at most every 30 minutes.</p>
+  </section>
+  <?php endif; ?>
 
   <?php if (hasPermission('inventory.view')): ?>
   <section class="panel">

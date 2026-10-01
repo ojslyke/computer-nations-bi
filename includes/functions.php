@@ -326,3 +326,129 @@ function compressAndSaveProductImage($tmpPath, $type, $destPath, $maxDimension =
     imagedestroy($image);
     return $saved;
 }
+
+/**
+ * Computes (and stores) one branch's cash reconciliation for one calendar
+ * day: opening balance carried forward from the most recent prior day's
+ * closing balance, cash actually received that day, cash actually paid out
+ * that day, and the resulting closing balance. Safe to call repeatedly —
+ * it recomputes and overwrites that day's row each time, so it always
+ * reflects the latest data even if called after the fact.
+ */
+function refreshCashLedger($pdo, $branchId, $date) {
+    $prior = $pdo->prepare(
+        "SELECT closing_cash FROM cash_ledger WHERE branch_id = ? AND ledger_date < ? ORDER BY ledger_date DESC LIMIT 1"
+    );
+    $prior->execute([$branchId, $date]);
+    $priorRow = $prior->fetch();
+    $opening = $priorRow ? (float)$priorRow['closing_cash'] : 0;
+
+    $cashIn = $pdo->prepare(
+        "SELECT COALESCE(SUM(ip.amount),0) s FROM installment_payments ip
+         JOIN orders o ON o.id = ip.order_id
+         WHERE o.branch_id = ? AND ip.payment_method = 'cash' AND DATE(ip.created_at) = ?"
+    );
+    $cashIn->execute([$branchId, $date]);
+    $cashIn = (float)$cashIn->fetch()['s'];
+
+    $cashOutExpenses = $pdo->prepare(
+        "SELECT COALESCE(SUM(amount),0) s FROM expenses WHERE branch_id = ? AND payment_method = 'cash' AND expense_date = ?"
+    );
+    $cashOutExpenses->execute([$branchId, $date]);
+    $cashOutExpenses = (float)$cashOutExpenses->fetch()['s'];
+
+    $cashOutRefunds = $pdo->prepare(
+        "SELECT COALESCE(SUM(r.amount),0) s FROM refunds r JOIN orders o ON o.id = r.order_id
+         WHERE o.branch_id = ? AND r.payment_method = 'cash' AND DATE(r.created_at) = ?"
+    );
+    $cashOutRefunds->execute([$branchId, $date]);
+    $cashOutRefunds = (float)$cashOutRefunds->fetch()['s'];
+
+    $cashOutTransfers = $pdo->prepare(
+        "SELECT COALESCE(SUM(amount),0) s FROM fund_transfers WHERE branch_id = ? AND method = 'cash' AND DATE(created_at) = ?"
+    );
+    $cashOutTransfers->execute([$branchId, $date]);
+    $cashOutTransfers = (float)$cashOutTransfers->fetch()['s'];
+
+    $cashOut = $cashOutExpenses + $cashOutRefunds + $cashOutTransfers;
+    $closing = $opening + $cashIn - $cashOut;
+
+    $pdo->prepare(
+        "INSERT INTO cash_ledger (branch_id, ledger_date, opening_cash, cash_in, cash_out, closing_cash) VALUES (?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE opening_cash = VALUES(opening_cash), cash_in = VALUES(cash_in), cash_out = VALUES(cash_out), closing_cash = VALUES(closing_cash)"
+    )->execute([$branchId, $date, $opening, $cashIn, $cashOut, $closing]);
+
+    return ['opening_cash' => $opening, 'cash_in' => $cashIn, 'cash_out' => $cashOut, 'closing_cash' => $closing];
+}
+
+/**
+ * Use this instead of refreshCashLedger() directly whenever a transaction
+ * could be backdated (an expense/transfer/refund/payment entered for a past
+ * date) — every day's opening balance is the prior day's closing, so a
+ * backdated entry would leave every later day's row stale otherwise. Always
+ * cascades through to today even if $date is today, so this is safe to call
+ * unconditionally after any cash-affecting write.
+ */
+function refreshCashLedgerCascade($pdo, $branchId, $fromDate) {
+    $lastDate = $pdo->prepare(
+        "SELECT GREATEST(
+            COALESCE((SELECT MAX(ledger_date) FROM cash_ledger WHERE branch_id = ?), ?),
+            CURDATE()
+         ) AS d"
+    );
+    $lastDate->execute([$branchId, $fromDate]);
+    $lastDate = $lastDate->fetch()['d'];
+
+    $current = new DateTime($fromDate);
+    $end = new DateTime($lastDate);
+    while ($current <= $end) {
+        refreshCashLedger($pdo, $branchId, $current->format('Y-m-d'));
+        $current->modify('+1 day');
+    }
+}
+
+/**
+ * Refreshes the per-branch daily sales rollup used by the "Daily Sales
+ * Performance by Store" dashboard widget and the secretary's sales
+ * reports — recomputed from real orders, not incrementally adjusted, so
+ * it's always correct even if an order was edited/cancelled after the fact.
+ */
+function refreshDailySalesSummary($pdo, $date) {
+    $rows = $pdo->prepare(
+        "SELECT branch_id, COUNT(*) AS orders_count, COALESCE(SUM(total_amount),0) AS revenue
+         FROM orders WHERE status = 'completed' AND DATE(created_at) = ? GROUP BY branch_id"
+    );
+    $rows->execute([$date]);
+    $rows = $rows->fetchAll();
+
+    $stmt = $pdo->prepare(
+        "INSERT INTO daily_sales_summary (branch_id, summary_date, orders_count, revenue) VALUES (?,?,?,?)
+         ON DUPLICATE KEY UPDATE orders_count = VALUES(orders_count), revenue = VALUES(revenue)"
+    );
+    foreach ($rows as $r) {
+        $stmt->execute([$r['branch_id'], $date, $r['orders_count'], $r['revenue']]);
+    }
+    // A branch with zero completed orders that day still gets a zeroed row,
+    // so it shows up in the "by store" breakdown rather than disappearing.
+    $branches = $pdo->query("SELECT id FROM branches WHERE is_active = 1")->fetchAll();
+    $touched = array_column($rows, 'branch_id');
+    foreach ($branches as $b) {
+        if (!in_array($b['id'], $touched)) {
+            $stmt->execute([$b['id'], $date, 0, 0]);
+        }
+    }
+}
+
+/**
+ * The "every 30 minutes" refresh for today's sales summary, done lazily on
+ * whichever request happens to need it rather than a separate background
+ * process — there's no dedicated worker/cron in this deployment, so a
+ * request-triggered staleness check is what actually keeps the data fresh
+ * within that window without new infrastructure.
+ */
+function ensureDailySalesSummaryFresh($pdo) {
+    cacheRemember('daily_sales_summary_refreshed_at', 1800, function () use ($pdo) {
+        refreshDailySalesSummary($pdo, date('Y-m-d'));
+        return true;
+    });
+}

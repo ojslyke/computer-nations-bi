@@ -68,7 +68,7 @@ if [ -n "$MYSQLHOST" ]; then
     # migrations confirmed safe to repeat are listed here — older ones
     # include one-time data transforms that were never audited for that.
     # Add each new migration to the END of this list as it's created.
-    for IDEMPOTENT_MIGRATION in migrate_v7_to_v8.sql migrate_v8_to_v9.sql; do
+    for IDEMPOTENT_MIGRATION in migrate_v7_to_v8.sql migrate_v8_to_v9.sql migrate_v9_to_v10.sql; do
       MIGRATION_PATH="/var/www/html/database/${IDEMPOTENT_MIGRATION}"
       if [ -f "$MIGRATION_PATH" ]; then
         MIGRATION_ERR=$(mysql -h "$MYSQLHOST" -P "${MYSQLPORT:-3306}" -u "$MYSQLUSER" $MYSQL_SSL_OPT "$MYSQLDATABASE" < "$MIGRATION_PATH" 2>&1 >/dev/null)
